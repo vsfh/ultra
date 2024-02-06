@@ -422,9 +422,21 @@ class BaseValidator:
             elif self.args.task == 'classify':
                 self.data = check_cls_dataset(self.args.data, split=self.args.split)
             else:
-                self.data = {'train':'/data/shenfeihong/classification/03', 'val':'/data/shenfeihong/classification/03', 'names':{0:'a'}, 'nc':1}
-                # raise FileNotFoundError(emojis(f"Dataset '{self.args.data}' for task={self.args.task} not found ❌"))
-
+                self.data = {'train':'/data/shenfeihong/classification/image_folder_04/train', \
+                            'val':'/data/shenfeihong/classification/image_folder_04/val', 
+                            'names':{11:'else',
+                                    2:'ceph',
+                                    8:'bite',
+                                    1:'pano',
+                                    3:'upper',
+                                    4:'lower',
+                                    5:'right',
+                                    6:'front',
+                                    7:'left',
+                                    9:'smile',
+                                    10:'face',
+                                    0:'small',}, 
+                            'nc':11}
             if self.device.type in ('cpu', 'mps'):
                 self.args.workers = 0  # faster CPU val as time dominated by inference, not dataloading
             if not pt:

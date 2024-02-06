@@ -11,8 +11,9 @@ from ultralytics.data import build_dataloader, build_yolo_dataset
 from ultralytics.models import yolo
 from ultralytics.nn.tasks import DetectionModel
 from ultralytics.utils import LOGGER, RANK
-from ultralytics.utils.plotting import plot_images, plot_labels, plot_results
+from ultralytics.utils.plotting import plot_labels, plot_results
 from ultralytics.utils.torch_utils import de_parallel, torch_distributed_zero_first
+from .val import plot_images
 
 # Ultralytics YOLO 🚀, AGPL-3.0 license
 """
@@ -142,7 +143,21 @@ class BaseTrainer:
             self.data = check_cls_dataset(self.args.data)
         elif self.args.data.split('.')[-1] in ('yaml', 'yml') or self.args.task in ('detect', 'segment', 'pose'):
             # self.data = check_det_dataset(self.args.data)
-            self.data = {'train':'/data/shenfeihong/classification/03', 'val':'/data/shenfeihong/classification/03', 'names':{0:'a'}, 'nc':1}
+            self.data = {'train':'/data/shenfeihong/classification/image_folder_04/train', \
+                        'val':'/data/shenfeihong/classification/image_folder_04/val', 
+                        'names':{11:'else',
+                                 2:'ceph',
+                                 8:'bite',
+                                 1:'pano',
+                                 3:'upper',
+                                 4:'lower',
+                                 5:'right',
+                                 6:'front',
+                                 7:'left',
+                                 9:'smile',
+                                 10:'face',
+                                 0:'small',}, 
+                        'nc':11}
             if 'yaml_file' in self.data:
                 self.args.data = self.data['yaml_file']  # for validating 'yolo train data=url.zip' usage
         # except Exception as e:
@@ -838,7 +853,8 @@ class DetectionTrainer(BaseTrainer):
                     bboxes=batch['bboxes'],
                     paths=batch['im_file'],
                     fname=self.save_dir / f'train_batch{ni}.jpg',
-                    on_plot=self.on_plot)
+                    on_plot=self.on_plot,
+                    poses=batch['poses'])
 
     def plot_metrics(self):
         """Plots metrics from a CSV file."""
@@ -1157,7 +1173,12 @@ class PoseDetectionLoss(v8DetectionLoss):
         targets = self.preprocess(targets.to(self.device), batch_size, scale_tensor=imgsz[[1, 0, 1, 0]])
         gt_labels, gt_bboxes = targets.split((1, 4), 2)  # cls, xyxy
         mask_gt = gt_bboxes.sum(2, keepdim=True).gt_(0)
-        gt_poses = torch.cat(batch['poses'], 0).to(self.device).type(dtype)
+
+        gt_poses = torch.zeros(batch_size, 1, self.pose_dim, device=self.device).type(dtype)
+        for i, pose in enumerate(batch['poses']):
+            if pose.shape[0]:
+              gt_poses[i] = pose  
+            
         
 
         # Pboxes

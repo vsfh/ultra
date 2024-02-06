@@ -11,7 +11,7 @@ from yolo import YOLO
 
 
 def train_new():
-    model = YOLO('/home/gregory/code/ultralytics/make_data_folder/det.yaml')
+    model = YOLO('./det.yaml')
     model.train()
     
 def predict_new():

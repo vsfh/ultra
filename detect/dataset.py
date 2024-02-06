@@ -38,6 +38,7 @@ from ultralytics.utils import LOCAL_RANK, LOGGER, NUM_THREADS, TQDM
 from ultralytics.data.utils import HELP_URL, IMG_FORMATS
 
 from ultralytics.utils import yaml_load, IterableSimpleNamespace
+from ultralytics.utils.ops import xyxy2xywh
 from PIL import Image
 DEFAULT_CFG_PATH = '/mnt/e/wsl/code/ultralytics/make_data_folder/cfg.yaml'
 DEFAULT_CFG_PATH = str(Path(os.path.abspath(__file__)).parent.parent)+'/cfg.yaml'
@@ -47,6 +48,20 @@ for k, v in DEFAULT_CFG_DICT.items():
         DEFAULT_CFG_DICT[k] = None
 DEFAULT_CFG_KEYS = DEFAULT_CFG_DICT.keys()
 DEFAULT_CFG = IterableSimpleNamespace(**DEFAULT_CFG_DICT)
+smile_cls = ['05','07','10','13','15']
+face_cls = ['06','08','11','14','16']
+project = {
+    '18':['else',11],
+    '00':['ceph',2],
+    '01':['bite',8],
+    '02':['pano',1],
+    '03':['upper',3],
+    '04':['lower',4],
+    '09':['right',5],
+    '12':['front',6],
+    '17':['left',7],
+    '19':['small',0],
+}
 
 class BaseDataset(Dataset):
     """
@@ -475,7 +490,21 @@ class YOLODataset(BaseDataset):
         self.use_segments = task == 'segment'
         self.use_keypoints = task == 'pose'
         self.use_obb = task == 'obb'
-        self.data = {'names':{0:'a'}}
+        self.data = {'train':'/data/shenfeihong/classification/image_folder_04/train', \
+                    'val':'/data/shenfeihong/classification/image_folder_04/val', 
+                    'names':{11:'else',
+                                2:'ceph',
+                                8:'bite',
+                                1:'pano',
+                                3:'upper',
+                                4:'lower',
+                                5:'right',
+                                6:'front',
+                                7:'left',
+                                9:'smile',
+                                10:'face',
+                                0:'small',}, 
+                    'nc':11}
         assert not (self.use_segments and self.use_keypoints), 'Can not use both segments and keypoints.'
         super().__init__(*args, **kwargs)
 
@@ -486,81 +515,102 @@ class YOLODataset(BaseDataset):
         im_file, lb_file, prefix, keypoint, num_cls, nkpt, ndim = args
         # Number (missing, found, empty, corrupt), message, segments, keypoints
         nm, nf, ne, nc, msg, segments, keypoints = 0, 0, 0, 0, '', [], None
-        try:
-            # Verify images
-            im = Image.open(im_file)
-            im.verify()  # PIL verify
-            shape = exif_size(im)  # image size
-            shape = (shape[1], shape[0])  # hw
-            assert (shape[0] > 9) & (shape[1] > 9), f'image size {shape} <10 pixels'
-            assert im.format.lower() in IMG_FORMATS, f'invalid image format {im.format}'
-            if im.format.lower() in ('jpg', 'jpeg'):
-                with open(im_file, 'rb') as f:
-                    f.seek(-2, 2)
-                    if f.read() != b'\xff\xd9':  # corrupt JPEG
-                        ImageOps.exif_transpose(Image.open(im_file)).save(im_file, 'JPEG', subsampling=0, quality=100)
-                        msg = f'{prefix}WARNING ⚠️ {im_file}: corrupt JPEG restored and saved'
-
-            # Verify labels
-            if os.path.isfile(lb_file):
-                nf = 1  # label found
-                with open(lb_file) as f:
-                    # lb = [x.split() for x in f.read().strip().splitlines() if len(x)]
+        # Verify images
+        im = Image.open(im_file)
+        im.verify()  # PIL verify
+        shape = exif_size(im)  # image size
+        shape = (shape[1], shape[0])  # hw
+        assert (shape[0] > 9) & (shape[1] > 9), f'image size {shape} <10 pixels'
+        assert im.format.lower() in IMG_FORMATS, f'invalid image format {im.format}'
+        if im.format.lower() in ('jpg', 'jpeg'):
+            with open(im_file, 'rb') as f:
+                f.seek(-2, 2)
+                if f.read() != b'\xff\xd9':  # corrupt JPEG
+                    ImageOps.exif_transpose(Image.open(im_file)).save(im_file, 'JPEG', subsampling=0, quality=100)
+                    msg = f'{prefix}WARNING ⚠️ {im_file}: corrupt JPEG restored and saved'
+        folder_name = lb_file.split('/')[-2]    
+        # Verify labels
+        if os.path.isfile(lb_file):
+            nf = 1  # label found
+            with open(lb_file) as f:
+                # lb = [x.split() for x in f.read().strip().splitlines() if len(x)]
+                if folder_name=='18':
+                    lb = []
+                else:
                     context = json.load(f)
-                    bbox = context['bbox']
-                    euler = context['euler']
-                    a = max(0,bbox[0]/shape[1])
-                    b = max(0,bbox[1]/shape[0])
-                    c = min((1-a)*2,bbox[2]/shape[1],1)
-                    d = min((1-b)*2,bbox[3]/shape[0],1)
-                    lb = [[0, a,b,c,d,euler[0], euler[1], euler[2],]]
+                    bbox = context['xyxy']
+                    if folder_name=='19':
+                        euler = [0,0,0]
+                    else:
+                        euler = context['euler']
+                        if len(euler) != 3:
+                            euler = euler[0]
+
+                    if folder_name in smile_cls:
+                        cls = 9
+                        a = bbox[0]-1.*abs(bbox[2]-bbox[0])
+                        c = bbox[2]+1.*abs(bbox[2]-bbox[0])
+                        b = bbox[1]-1.*abs(bbox[3]-bbox[1])
+                        d = bbox[3]+1.*abs(bbox[3]-bbox[1])
+                    elif folder_name in face_cls:
+                        cls = 10
+                        a = bbox[0]-1.*abs(bbox[2]-bbox[0])
+                        c = bbox[2]+1.*abs(bbox[2]-bbox[0])
+                        b = bbox[1]-1.*abs(bbox[3]-bbox[1])
+                        d = bbox[3]+1.*abs(bbox[3]-bbox[1])
+                    else:
+                        cls = project[folder_name][1]
+                        a,b,c,d = bbox
+                    a = min(max(0,a/shape[1]),1)
+                    b = min(max(0,b/shape[0]),1)
+                    c = max(a,min(c/shape[1],1))
+                    d = max(b,min(d/shape[0],1))
+                    a,b,c,d = xyxy2xywh(np.array([a,b,c,d])).tolist()
+                    lb = [[cls, a,b,c,d,euler[0], euler[1], euler[2],]]
                     # if any(len(x) > 6 for x in lb) and (not keypoint):  # is segment
                     if False:  # is segment
                         classes = np.array([x[0] for x in lb], dtype=np.float32)
                         segments = [np.array(x[1:], dtype=np.float32).reshape(-1, 2) for x in lb]  # (cls, xy1...)
                         lb = np.concatenate((classes.reshape(-1, 1), segments2boxes(segments)), 1)  # (cls, xywh)
                     lb = np.array(lb, dtype=np.float32)
-                nl = len(lb)
-                if nl:
-                    if keypoint:
-                        assert lb.shape[1] == (5 + nkpt * ndim), f'labels require {(5 + nkpt * ndim)} columns each'
-                        points = lb[:, 5:].reshape(-1, ndim)[:, :2]
-                    else:
-                        assert lb.shape[1] == 5 + pose_dim, f'labels require 5 columns, {lb.shape[1]} columns detected'
-                        points = lb[:, 1:5]
-                    if points.max()>1:
-                        a = 1
-                    assert points.max() <= 1, f'non-normalized or out of bounds coordinates {bbox} {shape}'
-                    assert lb.min() >= 0, f'negative label values {lb[lb < 0]}'
-
-                    # All labels
-                    max_cls = lb[:, 0].max()  # max label count
-                    assert max_cls <= num_cls, \
-                        f'Label class {int(max_cls)} exceeds dataset class count {num_cls}. ' \
-                        f'Possible class labels are 0-{num_cls - 1}'
-                    _, i = np.unique(lb, axis=0, return_index=True)
-                    if len(i) < nl:  # duplicate row check
-                        lb = lb[i]  # remove duplicates
-                        if segments:
-                            segments = [segments[x] for x in i]
-                        msg = f'{prefix}WARNING ⚠️ {im_file}: {nl - len(i)} duplicate labels removed'
+            nl = len(lb)
+            if nl:
+                if keypoint:
+                    assert lb.shape[1] == (5 + nkpt * ndim), f'labels require {(5 + nkpt * ndim)} columns each'
+                    points = lb[:, 5:].reshape(-1, ndim)[:, :2]
                 else:
-                    ne = 1  # label empty
-                    lb = np.zeros((0, (5 + nkpt * ndim) if keypoint else 5), dtype=np.float32)
+                    assert lb.shape[1] == 5 + pose_dim, f'labels require 5 columns, {lb.shape[1]} columns detected'
+                    points = lb[:, 1:5]
+                if points.max()>1:
+                    a = 1
+                assert points.max() <= 1, f'non-normalized or out of bounds coordinates {bbox} {shape}'
+                assert lb[:,:5].min() >= 0, f'negative label values {lb[lb < 0]}'
+
+                # All labels
+                max_cls = lb[:, 0].max()  # max label count
+                assert max_cls <= num_cls, \
+                    f'Label class {int(max_cls)} exceeds dataset class count {num_cls}. ' \
+                    f'Possible class labels are 0-{num_cls - 1}'
+                _, i = np.unique(lb, axis=0, return_index=True)
+                if len(i) < nl:  # duplicate row check
+                    lb = lb[i]  # remove duplicates
+                    if segments:
+                        segments = [segments[x] for x in i]
+                    msg = f'{prefix}WARNING ⚠️ {im_file}: {nl - len(i)} duplicate labels removed'
             else:
-                nm = 1  # label missing
-                lb = np.zeros((0, (5 + nkpt * ndim) if keypoints else 5), dtype=np.float32)
-            if keypoint:
-                keypoints = lb[:, 5:].reshape(-1, nkpt, ndim)
-                if ndim == 2:
-                    kpt_mask = np.where((keypoints[..., 0] < 0) | (keypoints[..., 1] < 0), 0.0, 1.0).astype(np.float32)
-                    keypoints = np.concatenate([keypoints, kpt_mask[..., None]], axis=-1)  # (nl, nkpt, 3)
-            # lb = lb[:, :5]
-            return im_file, lb, shape, segments, keypoints, nm, nf, ne, nc, msg
-        except Exception as e:
-            nc = 1
-            msg = f'{prefix}WARNING ⚠️ {im_file}: ignoring corrupt image/label: {e}'
-            return [None, None, None, None, None, nm, nf, ne, nc, msg]
+                ne = 1  # label empty
+                lb = np.zeros((0, (5 + pose_dim + nkpt * ndim) if keypoint else 5+pose_dim), dtype=np.float32)
+        else:
+            nm = 1  # label missing
+            lb = np.zeros((0, (5 + pose_dim + nkpt * ndim) if keypoints else 5+pose_dim), dtype=np.float32)
+        if keypoint:
+            keypoints = lb[:, 5:].reshape(-1, nkpt, ndim)
+            if ndim == 2:
+                kpt_mask = np.where((keypoints[..., 0] < 0) | (keypoints[..., 1] < 0), 0.0, 1.0).astype(np.float32)
+                keypoints = np.concatenate([keypoints, kpt_mask[..., None]], axis=-1)  # (nl, nkpt, 3)
+        # lb = lb[:, :5]
+        return im_file, lb, shape, segments, keypoints, nm, nf, ne, nc, msg
+
     
     def cache_labels(self, path=Path('./labels.cache')):
         """
@@ -619,14 +669,17 @@ class YOLODataset(BaseDataset):
 
     def img2label_paths(self, im_files):
         label_files = []
-        for path in im_files:
-            label_files.append(path.replace('.jpg','.json').replace('img','label'))
+        # for path in im_files:
+        #     label_files.append(path.replace('.jpg','.json').replace('img','label'))
+        json_dir = '/data/shenfeihong/classification/network_res/'
+        for x in im_files:
+            label_files.append(os.path.join(json_dir, x.split('/')[-2], os.path.basename(x).replace('jpg', 'json')))
         return label_files
     
     def get_labels(self):
         """Returns dictionary of labels for YOLO training."""
         self.label_files = self.img2label_paths(self.im_files)
-        cache_path = Path(self.label_files[0]).parent.with_suffix('.cache')
+        cache_path = Path(self.im_files[0]).parent.parent.with_suffix('.cache')
         try:
             cache, exists = load_dataset_cache_file(cache_path), True  # attempt to load a *.cache file
             assert cache['version'] == DATASET_CACHE_VERSION  # matches current version
