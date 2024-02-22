@@ -424,8 +424,7 @@ class BaseValidator:
             else:
                 self.data = {'train':'/data/shenfeihong/classification/image_folder_04/train', \
                             'val':'/data/shenfeihong/classification/image_folder_04/val', 
-                            'names':{11:'else',
-                                    2:'ceph',
+                            'names':{2:'ceph',
                                     8:'bite',
                                     1:'pano',
                                     3:'upper',

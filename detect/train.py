@@ -43,7 +43,7 @@ from ultralytics.utils import (DEFAULT_CFG, LOGGER, RANK, TQDM, __version__, cal
                                yaml_save)
 from ultralytics.utils.autobatch import check_train_batch_size
 from ultralytics.utils.checks import check_amp, check_file, check_imgsz, check_model_file_from_stem, print_args
-from ultralytics.utils.dist import ddp_cleanup, generate_ddp_command
+from ultralytics.utils.dist import *
 from ultralytics.utils.files import get_latest_run
 from ultralytics.utils.torch_utils import (EarlyStopping, ModelEMA, de_parallel, init_seeds, one_cycle, select_device,
                                            strip_optimizer)
@@ -145,8 +145,7 @@ class BaseTrainer:
             # self.data = check_det_dataset(self.args.data)
             self.data = {'train':'/data/shenfeihong/classification/image_folder_04/train', \
                         'val':'/data/shenfeihong/classification/image_folder_04/val', 
-                        'names':{11:'else',
-                                 2:'ceph',
+                        'names':{2:'ceph',
                                  8:'bite',
                                  1:'pano',
                                  3:'upper',
@@ -208,6 +207,27 @@ class BaseTrainer:
         else:  # i.e. device='cpu' or 'mps'
             world_size = 0
 
+        def generate_ddp_file_own(trainer):
+            """Generates a DDP file and returns its file name."""
+            content = f"""
+# Ultralytics Multi-GPU training temp file (should be automatically deleted after use)
+overrides = {vars(trainer.args)}
+
+if __name__ == "__main__":
+    import sys
+    sys.path.append('.')
+
+    from detect.train import DetectionTrainer
+    from ultralytics.utils import DEFAULT_CFG_DICT
+
+    cfg = DEFAULT_CFG_DICT.copy()
+    cfg.update(save_dir='')   # handle the extra key 'save_dir'
+    trainer = DetectionTrainer(cfg=cfg, overrides=overrides)
+    results = trainer.train()
+"""
+            with open('/home/gregory/code/ultra/ddp_file.py', 'w') as file:
+                file.write(content)
+            return file.name
         # Run subprocess if DDP training, else train normally
         if world_size > 1 and 'LOCAL_RANK' not in os.environ:
             # Argument checks
@@ -220,10 +240,16 @@ class BaseTrainer:
                 self.args.batch = 16
 
             # Command
-            cmd, file = generate_ddp_command(world_size, self)
+            generate_ddp_file_own(self)
+            port = find_free_network_port()
+            dist_cmd = "torch.distributed.run" if TORCH_1_9 else "torch.distributed.launch"
+            file = '/home/gregory/code/ultra/ddp_file.py'
+            cmd = [sys.executable, "-m", dist_cmd, "--nproc_per_node", f"{world_size}", "--master_port", f"{port}", file]
             try:
                 LOGGER.info(f'{colorstr("DDP:")} debug command {" ".join(cmd)}')
                 subprocess.run(cmd, check=True)
+
+                
             except Exception as e:
                 raise e
             finally:

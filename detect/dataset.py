@@ -492,18 +492,17 @@ class YOLODataset(BaseDataset):
         self.use_obb = task == 'obb'
         self.data = {'train':'/data/shenfeihong/classification/image_folder_04/train', \
                     'val':'/data/shenfeihong/classification/image_folder_04/val', 
-                    'names':{11:'else',
-                                2:'ceph',
-                                8:'bite',
-                                1:'pano',
-                                3:'upper',
-                                4:'lower',
-                                5:'right',
-                                6:'front',
-                                7:'left',
-                                9:'smile',
-                                10:'face',
-                                0:'small',}, 
+                    'names':{2:'ceph',
+                            8:'bite',
+                            1:'pano',
+                            3:'upper',
+                            4:'lower',
+                            5:'right',
+                            6:'front',
+                            7:'left',
+                            9:'smile',
+                            10:'face',
+                            0:'small',}, 
                     'nc':11}
         assert not (self.use_segments and self.use_keypoints), 'Can not use both segments and keypoints.'
         super().__init__(*args, **kwargs)
@@ -548,16 +547,16 @@ class YOLODataset(BaseDataset):
 
                     if folder_name in smile_cls:
                         cls = 9
-                        a = bbox[0]-1.*abs(bbox[2]-bbox[0])
-                        c = bbox[2]+1.*abs(bbox[2]-bbox[0])
-                        b = bbox[1]-1.*abs(bbox[3]-bbox[1])
-                        d = bbox[3]+1.*abs(bbox[3]-bbox[1])
+                        a = bbox[0]-0.1*abs(bbox[2]-bbox[0])
+                        c = bbox[2]+0.1*abs(bbox[2]-bbox[0])
+                        b = bbox[1]-0.1*abs(bbox[3]-bbox[1])
+                        d = bbox[3]+0.1*abs(bbox[3]-bbox[1])
                     elif folder_name in face_cls:
                         cls = 10
-                        a = bbox[0]-1.*abs(bbox[2]-bbox[0])
-                        c = bbox[2]+1.*abs(bbox[2]-bbox[0])
-                        b = bbox[1]-1.*abs(bbox[3]-bbox[1])
-                        d = bbox[3]+1.*abs(bbox[3]-bbox[1])
+                        a = bbox[0]-0.1*abs(bbox[2]-bbox[0])
+                        c = bbox[2]+0.1*abs(bbox[2]-bbox[0])
+                        b = bbox[1]-0.1*abs(bbox[3]-bbox[1])
+                        d = bbox[3]+0.1*abs(bbox[3]-bbox[1])
                     else:
                         cls = project[folder_name][1]
                         a,b,c,d = bbox

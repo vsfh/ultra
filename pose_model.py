@@ -12,7 +12,7 @@ from yolo import YOLO
 
 def train_new():
     model = YOLO('./det.yaml')
-    model.train()
+    model.train(device='1,2,3')
     
 def predict_new():
     import os
