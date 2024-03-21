@@ -107,18 +107,9 @@ class BaseTrainerNew:
 
         # Model and Dataset
         self.model = check_model_file_from_stem(self.args.model)  # add suffix, i.e. yolov8n -> yolov8n.pt
-        try:
-            if self.args.task == 'classify':
-                if self.args.data is None:
-                    self.data = None    # modify
-                else:
-                    self.data = check_cls_dataset(self.args.data)
-            elif self.args.data.split('.')[-1] in ('yaml', 'yml') or self.args.task in ('detect', 'segment', 'pose'):
-                self.data = check_det_dataset(self.args.data)
-                if 'yaml_file' in self.data:
-                    self.args.data = self.data['yaml_file']  # for validating 'yolo train data=url.zip' usage
-        except Exception as e:
-            raise RuntimeError(emojis(f"Dataset '{clean_url(self.args.data)}' error ❌ {e}")) from e
+        self.data = {'train':'/data/shenfeihong/classification/brace/iscan', \
+                        'val':'/data/shenfeihong/classification/brace/ultra', \
+                        'nc':2, 'names':{0:'none', 1:'not_none'}}
 
         if self.data is not None:
             self.trainset, self.testset = self.get_dataset(self.data)
@@ -732,7 +723,9 @@ class ClassificationTrainerNew(BaseTrainerNew):
         if overrides.get('imgsz') is None:
             overrides['imgsz'] = 640
         super().__init__(cfg, overrides, _callbacks)
-        self.data = {'nc':4, 'names':{0:'upper', 1:'left', 2:'down', 3:'right'}}
+        self.data = {'train':'/data/shenfeihong/classification/brace/iscan', \
+                        'val':'/data/shenfeihong/classification/brace/ultra', \
+                        'nc':2, 'names':{0:'none', 1:'not_none'}}
 
     def set_model_attributes(self):
         """Set the YOLO model's class names from the loaded dataset."""
@@ -850,35 +843,40 @@ class ClassificationTrainerNew(BaseTrainerNew):
 from PIL import Image
 import cv2
 import numpy as np
-import random
+import glob
 from ultralytics.data.augment import LetterBox
 
 class ClassificationDatasetNew(torch.utils.data.Dataset):
     def __init__(self, mode='train'):
-        self.path = '/mnt/e/data/classification/toy/03'
+        self.path = '/data/shenfeihong/classification/brace'
         if mode=='train':
-            self.images = os.listdir(self.path)[:-200]
+            self.images = glob.glob(os.path.join(self.path, 'iscan', '*','*.jpg'))
         else:
-            self.images = os.listdir(self.path)[-200:]
-        self.torch_transforms = torchvision.transforms.ToTensor()
+            self.images = glob.glob(os.path.join(self.path, 'ultra', '*','*.jpg'))
+
         self.letterbox = LetterBox((640, 640))
         
     def __len__(self):
         return len(self.images)
     
+    def _format_img(self, img):
+        """Format the image for YOLO from Numpy array to PyTorch tensor."""
+        if len(img.shape) < 3:
+            img = np.expand_dims(img, -1)
+        img = np.ascontiguousarray(img.transpose(2, 0, 1)[::-1])
+        img = torch.from_numpy(img)
+        return img
+    
     def __getitem__(self, index, new_shape=(640,640), show=False):
         image = self.images[index]
         image_path = os.path.join(self.path, image)
-        im = cv2.imread(image_path)
+        if 'not_none' in image_path:
+            a = 1
+        else:
+            a = 0
+        im = np.array(Image.open(image_path))
         im = self.letterbox(image=im)
-        R = np.eye(3)
-        a = random.choice([0, 1, 2, 3])  # add 90deg rotations to small rotations
-        R[:2] = cv2.getRotationMatrix2D(angle=a*90, center=(320, 320), scale=1)
-        im = cv2.warpAffine(im, R[:2], dsize=new_shape, borderValue=(0, 0, 0))
-
-        im = im[..., ::-1].transpose((2,0,1))  # BGR to RGB, HWC to CHW, (3, h, w)
-        im = np.ascontiguousarray(im)  # contiguous
-        im = torch.from_numpy(im)
+        im = self._format_img(im)
 
         im = im.float()  # uint8 to fp16/32
         im /= 255  # 0 - 255 to 0.0 - 1.0

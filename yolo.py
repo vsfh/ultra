@@ -15,14 +15,16 @@ from ultralytics.cfg import TASK2DATA, get_cfg, get_save_dir
 from ultralytics.hub.utils import HUB_WEB_ROOT
 from ultralytics.nn.tasks import attempt_load_one_weight, guess_model_task, nn, yaml_model_load
 from ultralytics.utils import ASSETS, LOGGER, RANK, callbacks, checks, emojis, yaml_load
-from ultralytics.engine.exporter import Exporter
+# from ultralytics.engine.exporter import Exporter
+from exporter import Exporter
 import sys
 sys.path.append('.')
-from cls.trainer import ClassificationTrainerNew
-from cls.predictor import ClassificationPredictorNew
-from cls.validator import ClassificationValidatorNew
+from cls.train import ClassificationTrainer
+from cls.predict import ClassificationPredictor
+from cls.val import ClassificationValidator
 
 from detect.train import DetectionTrainer, PoseDetectionModel
+from detect.predict import DetectionPredictor
 import os
 DEFAULT_CFG_PATH = str(Path(os.path.abspath(__file__)).parent)+'/cfg.yaml'
 
@@ -345,6 +347,7 @@ class Model(nn.Module):
 
         custom = {'imgsz': self.model.args['imgsz'], 'batch': 1, 'data': None, 'verbose': False}  # method defaults
         args = {**self.overrides, **custom, **kwargs, 'mode': 'export'}  # highest priority args on the right
+        print(args)
         return Exporter(overrides=args, _callbacks=self.callbacks)(model=self.model)
 
     def train(self, trainer=None, **kwargs):
@@ -477,14 +480,14 @@ class YOLO(Model):
         return {
             'classify': {
                 'model': ClassificationModel,
-                'trainer': ClassificationTrainerNew,
-                'validator': ClassificationValidatorNew,
-                'predictor': ClassificationPredictorNew, },
+                'trainer': ClassificationTrainer,
+                'validator': ClassificationValidator,
+                'predictor': ClassificationPredictor, },
             'detect': {
                 'model': PoseDetectionModel,
                 'trainer': DetectionTrainer,
                 'validator': yolo.detect.DetectionValidator,
-                'predictor': yolo.detect.DetectionPredictor, },
+                'predictor': DetectionPredictor, },
             'segment': {
                 'model': SegmentationModel,
                 'trainer': yolo.segment.SegmentationTrainer,

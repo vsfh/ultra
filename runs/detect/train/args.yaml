@@ -5,12 +5,12 @@ data: shenfeihong
 epochs: 100
 time: null
 patience: 50
-batch: 120
+batch: 72
 imgsz: 640
 save: true
 save_period: -1
 cache: false
-device: 1,2,3
+device: 4,5,6,7
 workers: 8
 project: null
 name: train
@@ -25,7 +25,7 @@ rect: false
 cos_lr: false
 close_mosaic: 10
 resume: false
-amp: true
+amp: false
 fraction: 1.0
 profile: false
 freeze: null
@@ -80,7 +80,7 @@ warmup_bias_lr: 0.1
 box: 7.5
 cls: 0.5
 dfl: 1.5
-pose: 12.0
+pose: 1.0
 kobj: 1.0
 label_smoothing: 0.0
 nbs: 64

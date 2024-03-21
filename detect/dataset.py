@@ -40,7 +40,7 @@ from ultralytics.data.utils import HELP_URL, IMG_FORMATS
 from ultralytics.utils import yaml_load, IterableSimpleNamespace
 from ultralytics.utils.ops import xyxy2xywh
 from PIL import Image
-DEFAULT_CFG_PATH = '/mnt/e/wsl/code/ultralytics/make_data_folder/cfg.yaml'
+# DEFAULT_CFG_PATH = '/mnt/e/wsl/code/ultralytics/make_data_folder/cfg.yaml'
 DEFAULT_CFG_PATH = str(Path(os.path.abspath(__file__)).parent.parent)+'/cfg.yaml'
 DEFAULT_CFG_DICT = yaml_load(DEFAULT_CFG_PATH)
 for k, v in DEFAULT_CFG_DICT.items():
@@ -161,6 +161,7 @@ class BaseDataset(Dataset):
                 else:
                     raise FileNotFoundError(f'{self.prefix}{p} does not exist')
             im_files = sorted(x.replace('/', os.sep) for x in f if x.split('.')[-1].lower() in IMG_FORMATS)
+            im_files = [im for im in im_files if im.split('/')[-2]!= '18']
             # self.img_files = sorted([x for x in f if x.suffix[1:].lower() in IMG_FORMATS])  # pathlib
             assert im_files, f'{self.prefix}No images found in {img_path}'
         except Exception as e:
@@ -393,9 +394,10 @@ class InstancesPose(Instances):
         self.normalized = normalized
         self.segments = segments
         
-    def rot_90_bbox(self, M, angle):
-        self.poses[:, 2] -= angle
-        self._bboxes.rot_90(M, angle)
+    def rot_90_bbox(self, M, degree):
+        self.poses[:, 0] = degree/270
+
+        self._bboxes.rot_90(M, degree)
         
     def __getitem__(self, index) -> 'Instances':
         """
@@ -441,7 +443,12 @@ class RandomRot:
         shape = img.shape[:2]  # current shape [height, width]
 
         R = np.eye(3)
-        angle = random.choice([0, 90, 180 , 270])  # add 90deg rotations to small rotations
+        angle = random.choice([0, 180, 90, 270])  # add 90deg rotations to small rotations
+        
+        if 4 in labels['cls']:
+            R[:2] = cv2.getRotationMatrix2D(angle=180, center=(int(shape[0]//2), int(shape[1]//2)), scale=1)
+            img = cv2.warpAffine(img, R[:2], dsize=shape, borderValue=(0, 0, 0))
+            
         R[:2] = cv2.getRotationMatrix2D(angle=angle, center=(int(shape[0]//2), int(shape[1]//2)), scale=1)
         
         img = cv2.warpAffine(img, R[:2], dsize=shape, borderValue=(0, 0, 0))
@@ -455,7 +462,7 @@ class RandomRot:
 class FormatPose:
     def __init__(self, **kwargs):
         self.format = Format(**kwargs)
-        self.pose_dim = 6
+        self.pose_dim = 1
     def __call__(self, labels):
         former_label = self.format(labels.copy())
         instances = labels.pop('instances')
@@ -464,8 +471,11 @@ class FormatPose:
             poses_list = []
             for i in range(len(instances.poses)):
                 single_pose = instances.poses[i]
-                matrix = R.from_euler('xyz', single_pose, degrees=True).as_matrix()
-                poses_list.append([np.concatenate((matrix[:,0], matrix[:,1]),0)])
+                if self.pose_dim == 1:
+                    poses_list.append(single_pose)
+                elif self.pose_dim == 6:
+                    matrix = R.from_euler('xyz', single_pose, degrees=True).as_matrix()
+                    poses_list.append([np.concatenate((matrix[:,0], matrix[:,1]),0)])
             poses_arr = np.concatenate(poses_list, 0, dtype=np.float32)
                 
             former_label['poses'] = torch.from_numpy(poses_arr) 
@@ -490,8 +500,8 @@ class YOLODataset(BaseDataset):
         self.use_segments = task == 'segment'
         self.use_keypoints = task == 'pose'
         self.use_obb = task == 'obb'
-        self.data = {'train':'/data/shenfeihong/classification/image_folder_04/train', \
-                    'val':'/data/shenfeihong/classification/image_folder_04/val', 
+        self.data = {'train':'/data/shenfeihong/classification/image/train', \
+                    'val':'/data/shenfeihong/classification/image/val', 
                     'names':{2:'ceph',
                             8:'bite',
                             1:'pano',
@@ -510,7 +520,7 @@ class YOLODataset(BaseDataset):
     def verify_image_label(self, args):
         from ultralytics.data.utils import exif_size, ImageOps, segments2boxes
         """Verify one image-label pair."""
-        pose_dim = 3
+        pose_dim = 1
         im_file, lb_file, prefix, keypoint, num_cls, nkpt, ndim = args
         # Number (missing, found, empty, corrupt), message, segments, keypoints
         nm, nf, ne, nc, msg, segments, keypoints = 0, 0, 0, 0, '', [], None
@@ -538,8 +548,10 @@ class YOLODataset(BaseDataset):
                 else:
                     context = json.load(f)
                     bbox = context['xyxy']
-                    if folder_name=='19':
-                        euler = [0,0,0]
+                    if folder_name=='19' or folder_name=='03':
+                        euler = [0,0,0.1]
+                    elif folder_name=='04':
+                        euler = [0,0,179.9]
                     else:
                         euler = context['euler']
                         if len(euler) != 3:
@@ -560,12 +572,12 @@ class YOLODataset(BaseDataset):
                     else:
                         cls = project[folder_name][1]
                         a,b,c,d = bbox
-                    a = min(max(0,a/shape[1]),1)
-                    b = min(max(0,b/shape[0]),1)
-                    c = max(a,min(c/shape[1],1))
-                    d = max(b,min(d/shape[0],1))
+                    a = min(max(0.001,a/shape[1]),0.999)
+                    b = min(max(0.001,b/shape[0]),0.999)
+                    c = min(max(a,min(c/shape[1],0.999)),0.999)
+                    d = min(max(b,min(d/shape[0],0.999)),0.999)
                     a,b,c,d = xyxy2xywh(np.array([a,b,c,d])).tolist()
-                    lb = [[cls, a,b,c,d,euler[0], euler[1], euler[2],]]
+                    lb = [[cls, a,b,c,d,0]]
                     # if any(len(x) > 6 for x in lb) and (not keypoint):  # is segment
                     if False:  # is segment
                         classes = np.array([x[0] for x in lb], dtype=np.float32)
