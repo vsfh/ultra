@@ -18,7 +18,6 @@ from pathlib import Path
 
 import numpy as np
 import torch
-
 from ultralytics.cfg import get_cfg, get_save_dir
 from ultralytics.data.utils import check_cls_dataset, check_det_dataset
 from ultralytics.nn.autobackend import AutoBackend
@@ -27,13 +26,20 @@ from ultralytics.utils.checks import check_imgsz
 from ultralytics.utils.torch_utils import de_parallel, select_device, smart_inference_mode
 from ultralytics.utils.plotting import *
 from ultralytics.utils.ops import *
-
+from scipy.spatial.transform import Rotation as R
+from ultralytics.engine.validator import BaseValidator
 class PoseAnnotator(Annotator):
     def pose_label(self, pose, box, size = 100):
-        arr_a = pose[:3] / np.linalg.norm(pose[:3])
-        arr_b = pose[-3:] / np.linalg.norm(pose[3:])
-        arr_c = np.cross(arr_a, arr_b)
-        pose = np.stack((arr_a, arr_b, arr_c), 1)
+        pose_dim = len(pose)
+        if pose_dim==6:
+            arr_a = pose[:3] / np.linalg.norm(pose[:3])
+            arr_b = pose[-3:] / np.linalg.norm(pose[3:])
+            arr_c = np.cross(arr_a, arr_b)
+            pose = np.stack((arr_a, arr_b, arr_c), 1)
+        if pose_dim==3:
+            pose = R.from_euler('xyz', [0,0,-270*pose[2]], degrees=True).as_matrix()
+        if pose_dim==1:
+            pose = R.from_euler('xyz', [0,0,-270*pose[0]], degrees=True).as_matrix()
         tdx = int((box[0]+box[2])/2)
         tdy = int((box[1]+box[3])/2)
         
@@ -146,11 +152,11 @@ def plot_images(images,
                         label = f'{c}' if labels else f'{c} {conf[j]:.1f}'
                         annotator.box_label(box, label, color=color, rotated=is_obb)
                         if not poses is None:
-                            pose = poses[i]
+                            pose = poses[i].view(1)
                             if isinstance(pose, torch.Tensor):
                                 pose = pose.cpu().numpy()
-                            if len(pose.shape)!=1:
-                                pose = pose[j]
+                            # if len(pose.shape)!=1:
+                            #     pose = pose[j]
                             annotator.pose_label(pose, box)
                             
 
@@ -207,7 +213,7 @@ def plot_images(images,
     else:
         return np.asarray(annotator.im)
     
-def non_max_suppression(
+def _non_max_suppression(
     prediction,
     conf_thres=0.25,
     iou_thres=0.45,
@@ -221,18 +227,18 @@ def non_max_suppression(
     max_nms=30000,
     max_wh=7680,
     rotated=False,
-    contain_pose=False
+    contain_pose=False,
+    poses=None
 ):
     # Checks
-    pose_dim = 6
+    pose_dim = 1
     assert 0 <= conf_thres <= 1, f'Invalid Confidence threshold {conf_thres}, valid values are between 0.0 and 1.0'
     assert 0 <= iou_thres <= 1, f'Invalid IoU {iou_thres}, valid values are between 0.0 and 1.0'
     if isinstance(prediction, (list, tuple)):  # YOLOv8 model in validation model, output = (inference_out, loss_out)
         prediction = prediction[0]  # select only inference output
     if contain_pose:
         poses_output = [torch.zeros((0, pose_dim), device=prediction.device)] * prediction.shape[0]
-        poses = prediction[:, -pose_dim:, :]
-        prediction = prediction[:,:-pose_dim,:]
+
     bs = prediction.shape[0]  # batch size
     nc = nc or (prediction.shape[1] - 4)  # number of classes
     nm = prediction.shape[1] - nc - 4
@@ -252,10 +258,10 @@ def non_max_suppression(
 
     t = time.time()
     output = [torch.zeros((0, 6 + nm), device=prediction.device)] * bs
-    for xi, x in enumerate(prediction):  # image index, image inference
+    for xi, x_ in enumerate(prediction):  # image index, image inference
         # Apply constraints
         # x[((x[:, 2:4] < min_wh) | (x[:, 2:4] > max_wh)).any(1), 4] = 0  # width-height
-        x = x[xc[xi]]  # confidence
+        x = x_[xc[xi]]  # confidence
         if contain_pose:
             pose = poses[xi]
             pose = pose[xc[xi]]
@@ -316,71 +322,31 @@ def non_max_suppression(
         return output, poses_output
     return output
 
-class BaseValidator:
+class DetectionValidator(BaseValidator):
     """
-    BaseValidator.
+    A class extending the BaseValidator class for validation based on a detection model.
 
-    A base class for creating validators.
+    Example:
+        ```python
+        from ultralytics.models.yolo.detect import DetectionValidator
 
-    Attributes:
-        args (SimpleNamespace): Configuration for the validator.
-        dataloader (DataLoader): Dataloader to use for validation.
-        pbar (tqdm): Progress bar to update during validation.
-        model (nn.Module): Model to validate.
-        data (dict): Data dictionary.
-        device (torch.device): Device to use for validation.
-        batch_i (int): Current batch index.
-        training (bool): Whether the model is in training mode.
-        names (dict): Class names.
-        seen: Records the number of images seen so far during validation.
-        stats: Placeholder for statistics during validation.
-        confusion_matrix: Placeholder for a confusion matrix.
-        nc: Number of classes.
-        iouv: (torch.Tensor): IoU thresholds from 0.50 to 0.95 in spaces of 0.05.
-        jdict (dict): Dictionary to store JSON validation results.
-        speed (dict): Dictionary with keys 'preprocess', 'inference', 'loss', 'postprocess' and their respective
-                      batch processing times in milliseconds.
-        save_dir (Path): Directory to save results.
-        plots (dict): Dictionary to store plots for visualization.
-        callbacks (dict): Dictionary to store various callback functions.
+        args = dict(model='yolov8n.pt', data='coco8.yaml')
+        validator = DetectionValidator(args=args)
+        validator()
+        ```
     """
 
     def __init__(self, dataloader=None, save_dir=None, pbar=None, args=None, _callbacks=None):
-        """
-        Initializes a BaseValidator instance.
-
-        Args:
-            dataloader (torch.utils.data.DataLoader): Dataloader to be used for validation.
-            save_dir (Path, optional): Directory to save results.
-            pbar (tqdm.tqdm): Progress bar for displaying progress.
-            args (SimpleNamespace): Configuration for the validator.
-            _callbacks (dict): Dictionary to store various callback functions.
-        """
-        self.args = get_cfg(overrides=args)
-        self.dataloader = dataloader
-        self.pbar = pbar
-        self.stride = None
-        self.data = None
-        self.device = None
-        self.batch_i = None
-        self.training = True
-        self.names = None
-        self.seen = None
-        self.stats = None
-        self.confusion_matrix = None
-        self.nc = None
-        self.iouv = None
-        self.jdict = None
-        self.speed = {'preprocess': 0.0, 'inference': 0.0, 'loss': 0.0, 'postprocess': 0.0}
-
-        self.save_dir = save_dir or get_save_dir(self.args)
-        (self.save_dir / 'labels' if self.args.save_txt else self.save_dir).mkdir(parents=True, exist_ok=True)
-        if self.args.conf is None:
-            self.args.conf = 0.001  # default conf=0.001
-        self.args.imgsz = check_imgsz(self.args.imgsz, max_dim=1)
-
-        self.plots = {}
-        self.callbacks = _callbacks or callbacks.get_default_callbacks()
+        """Initialize detection model with necessary variables and settings."""
+        super().__init__(dataloader, save_dir, pbar, args, _callbacks)
+        self.nt_per_class = None
+        self.is_coco = False
+        self.class_map = None
+        self.args.task = 'detect'
+        self.metrics = DetMetrics(save_dir=self.save_dir, on_plot=self.on_plot)
+        self.iouv = torch.linspace(0.5, 0.95, 10)  # iou vector for mAP@0.5:0.95
+        self.niou = self.iouv.numel()
+        self.lb = []  # for autolabelling
 
     @smart_inference_mode()
     def __call__(self, trainer=None, model=None):
@@ -420,10 +386,12 @@ class BaseValidator:
             if str(self.args.data).split('.')[-1] in ('yaml', 'yml'):
                 self.data = check_det_dataset(self.args.data)
             elif self.args.task == 'classify':
-                self.data = check_cls_dataset(self.args.data, split=self.args.split)
+                self.data = {'train':'/data/shenfeihong/classification/brace/iscan', \
+                'val':'/data/shenfeihong/classification/brace/ultra', \
+                'nc':2, 'names':{0:'none', 1:'not_none'}}
             else:
-                self.data = {'train':'/data/shenfeihong/classification/image_folder_04/train', \
-                            'val':'/data/shenfeihong/classification/image_folder_04/val', 
+                self.data = {'train':'/data/shenfeihong/classification/image/train', \
+                            'val':'/data/shenfeihong/classification/image/val', 
                             'names':{2:'ceph',
                                     8:'bite',
                                     1:'pano',
@@ -469,13 +437,18 @@ class BaseValidator:
 
             # Postprocess
             with dt[3]:
-                preds, poses = self.postprocess(preds)
+                if self.args.task == 'detect':
+                    preds, poses = self.postprocess(preds)
+                else:
+                    preds = self.postprocess(preds)
 
             self.update_metrics(preds, batch)
-            if self.args.plots and batch_i < 3:
+            if batch_i < 3:
                 self.plot_val_samples(batch, batch_i)
-                self.plot_predictions(batch, preds, batch_i, poses)
-
+                if self.args.task == 'detect':
+                    self.plot_predictions(batch, preds, batch_i, poses)
+                else:
+                    self.plot_predictions(batch, preds, batch_i)
             self.run_callbacks('on_val_batch_end')
         stats = self.get_stats()
         self.check_stats(stats)
@@ -498,154 +471,7 @@ class BaseValidator:
             if self.args.plots or self.args.save_json:
                 LOGGER.info(f"Results saved to {colorstr('bold', self.save_dir)}")
             return stats
-
-    def match_predictions(self, pred_classes, true_classes, iou, use_scipy=False):
-        """
-        Matches predictions to ground truth objects (pred_classes, true_classes) using IoU.
-
-        Args:
-            pred_classes (torch.Tensor): Predicted class indices of shape(N,).
-            true_classes (torch.Tensor): Target class indices of shape(M,).
-            iou (torch.Tensor): An NxM tensor containing the pairwise IoU values for predictions and ground of truth
-            use_scipy (bool): Whether to use scipy for matching (more precise).
-
-        Returns:
-            (torch.Tensor): Correct tensor of shape(N,10) for 10 IoU thresholds.
-        """
-        # Dx10 matrix, where D - detections, 10 - IoU thresholds
-        correct = np.zeros((pred_classes.shape[0], self.iouv.shape[0])).astype(bool)
-        # LxD matrix where L - labels (rows), D - detections (columns)
-        correct_class = true_classes[:, None] == pred_classes
-        iou = iou * correct_class  # zero out the wrong classes
-        iou = iou.cpu().numpy()
-        for i, threshold in enumerate(self.iouv.cpu().tolist()):
-            if use_scipy:
-                # WARNING: known issue that reduces mAP in https://github.com/ultralytics/ultralytics/pull/4708
-                import scipy  # scope import to avoid importing for all commands
-                cost_matrix = iou * (iou >= threshold)
-                if cost_matrix.any():
-                    labels_idx, detections_idx = scipy.optimize.linear_sum_assignment(cost_matrix, maximize=True)
-                    valid = cost_matrix[labels_idx, detections_idx] > 0
-                    if valid.any():
-                        correct[detections_idx[valid], i] = True
-            else:
-                matches = np.nonzero(iou >= threshold)  # IoU > threshold and classes match
-                matches = np.array(matches).T
-                if matches.shape[0]:
-                    if matches.shape[0] > 1:
-                        matches = matches[iou[matches[:, 0], matches[:, 1]].argsort()[::-1]]
-                        matches = matches[np.unique(matches[:, 1], return_index=True)[1]]
-                        # matches = matches[matches[:, 2].argsort()[::-1]]
-                        matches = matches[np.unique(matches[:, 0], return_index=True)[1]]
-                    correct[matches[:, 1].astype(int), i] = True
-        return torch.tensor(correct, dtype=torch.bool, device=pred_classes.device)
-
-    def add_callback(self, event: str, callback):
-        """Appends the given callback."""
-        self.callbacks[event].append(callback)
-
-    def run_callbacks(self, event: str):
-        """Runs all callbacks associated with a specified event."""
-        for callback in self.callbacks.get(event, []):
-            callback(self)
-
-    def get_dataloader(self, dataset_path, batch_size):
-        """Get data loader from dataset path and batch size."""
-        raise NotImplementedError('get_dataloader function not implemented for this validator')
-
-    def build_dataset(self, img_path):
-        """Build dataset."""
-        raise NotImplementedError('build_dataset function not implemented in validator')
-
-    def preprocess(self, batch):
-        """Preprocesses an input batch."""
-        return batch
-
-    def postprocess(self, preds):
-        """Describes and summarizes the purpose of 'postprocess()' but no details mentioned."""
-        return preds
-
-    def init_metrics(self, model):
-        """Initialize performance metrics for the YOLO model."""
-        pass
-
-    def update_metrics(self, preds, batch):
-        """Updates metrics based on predictions and batch."""
-        pass
-
-    def finalize_metrics(self, *args, **kwargs):
-        """Finalizes and returns all metrics."""
-        pass
-
-    def get_stats(self):
-        """Returns statistics about the model's performance."""
-        return {}
-
-    def check_stats(self, stats):
-        """Checks statistics."""
-        pass
-
-    def print_results(self):
-        """Prints the results of the model's predictions."""
-        pass
-
-    def get_desc(self):
-        """Get description of the YOLO model."""
-        pass
-
-    @property
-    def metric_keys(self):
-        """Returns the metric keys used in YOLO training/validation."""
-        return []
-
-    def on_plot(self, name, data=None):
-        """Registers plots (e.g. to be consumed in callbacks)"""
-        self.plots[Path(name)] = {'data': data, 'timestamp': time.time()}
-
-    # TODO: may need to put these following functions into callback
-    def plot_val_samples(self, batch, ni):
-        """Plots validation samples during training."""
-        pass
-
-    def plot_predictions(self, batch, preds, ni, poses=None):
-        """Plots YOLO model predictions on batch images."""
-        pass
-
-    def pred_to_json(self, preds, batch):
-        """Convert predictions to JSON format."""
-        pass
-
-    def eval_json(self, stats):
-        """Evaluate and return JSON format of prediction statistics."""
-        pass
-
-
-class DetectionValidator(BaseValidator):
-    """
-    A class extending the BaseValidator class for validation based on a detection model.
-
-    Example:
-        ```python
-        from ultralytics.models.yolo.detect import DetectionValidator
-
-        args = dict(model='yolov8n.pt', data='coco8.yaml')
-        validator = DetectionValidator(args=args)
-        validator()
-        ```
-    """
-
-    def __init__(self, dataloader=None, save_dir=None, pbar=None, args=None, _callbacks=None):
-        """Initialize detection model with necessary variables and settings."""
-        super().__init__(dataloader, save_dir, pbar, args, _callbacks)
-        self.nt_per_class = None
-        self.is_coco = False
-        self.class_map = None
-        self.args.task = 'detect'
-        self.metrics = DetMetrics(save_dir=self.save_dir, on_plot=self.on_plot)
-        self.iouv = torch.linspace(0.5, 0.95, 10)  # iou vector for mAP@0.5:0.95
-        self.niou = self.iouv.numel()
-        self.lb = []  # for autolabelling
-
+        
     def preprocess(self, batch):
         """Preprocesses batch of images for YOLO training."""
         batch['img'] = batch['img'].to(self.device, non_blocking=True)
@@ -684,16 +510,15 @@ class DetectionValidator(BaseValidator):
 
     def postprocess(self, preds):
         """Apply Non-maximum suppression to prediction outputs."""
-        # pose_dim = 6
-        # nc = preds[0].shape[1]-4-pose_dim
-        return non_max_suppression(preds,
-                                       self.args.conf,
-                                       self.args.iou,
-                                       labels=self.lb,
-                                       multi_label=True,
-                                       agnostic=self.args.single_cls,
-                                       max_det=self.args.max_det,
-                                       contain_pose=True)
+        predition, pose = preds
+        return non_max_suppression(predition,
+                                self.args.conf,
+                                self.args.iou,
+                                labels=self.lb,
+                                multi_label=False,
+                                agnostic=self.args.single_cls,
+                                max_det=self.args.max_det,
+                                ), pose
 
 
     def _prepare_batch(self, si, batch):
@@ -845,7 +670,7 @@ class DetectionValidator(BaseValidator):
                     fname=self.save_dir / f'val_batch{ni}_pred.jpg',
                     names=self.names,
                     on_plot=self.on_plot,
-                    poses=torch.cat(poses,0).cpu().numpy() if not poses is None else None)  # pred
+                    poses=poses)  # pred
 
     def save_one_txt(self, predn, save_conf, shape, file):
         """Save YOLO detections to a txt file in normalized coordinates in a specific format."""

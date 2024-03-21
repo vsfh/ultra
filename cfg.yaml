@@ -1,16 +1,16 @@
 # Ultralytics YOLO 🚀, AGPL-3.0 license
 # Default training settings and hyperparameters for medium-augmentation COCO training
 
-task: detect  # (str) YOLO task, i.e. detect, segment, classify, pose
+task: classify  # (str) YOLO task, i.e. detect, segment, classify, pose
 mode: train  # (str) YOLO mode, i.e. train, val, predict, export, track, benchmark
 
 # Train settings -------------------------------------------------------------------------------------------------------
-model:  # (str, optional) path to model file, i.e. yolov8n.pt, yolov8n.yaml
+model: yolov8n.pt # (str, optional) path to model file, i.e. yolov8n.pt, yolov8n.yaml
 data: shenfeihong # (str, optional) path to data file, i.e. coco128.yaml
 epochs: 100  # (int) number of epochs to train for
 time:  # (float, optional) number of hours to train for, overrides epochs if supplied
 patience: 50  # (int) epochs to wait for no observable improvement for early stopping of training
-batch: 120  # (int) number of images per batch (-1 for AutoBatch)
+batch: 24  # (int) number of images per batch (-1 for AutoBatch)
 imgsz: 640  # (int | list) input images size as int for train and val modes, or list[w,h] for predict and export modes
 save: True  # (bool) save train checkpoints and predict results
 save_period: -1 # (int) Save checkpoint every x epochs (disabled if < 1)
@@ -30,7 +30,7 @@ rect: False  # (bool) rectangular training if mode='train' or rectangular valida
 cos_lr: False  # (bool) use cosine learning rate scheduler
 close_mosaic: 10  # (int) disable mosaic augmentation for final epochs (0 to disable)
 resume: False  # (bool) resume training from last checkpoint
-amp: True  # (bool) Automatic Mixed Precision (AMP) training, choices=[True, False], True runs AMP check
+amp: False  # (bool) Automatic Mixed Precision (AMP) training, choices=[True, False], True runs AMP check
 fraction: 1.0  # (float) dataset fraction to train on (default is 1.0, all images in train set)
 profile: False  # (bool) profile ONNX and TensorRT speeds during training for loggers
 freeze: None  # (int | list, optional) freeze first n layers, or freeze list of layer indices during training
@@ -97,7 +97,7 @@ warmup_bias_lr: 0.1  # (float) warmup initial bias lr
 box: 7.5  # (float) box loss gain
 cls: 0.5  # (float) cls loss gain (scale with pixels)
 dfl: 1.5  # (float) dfl loss gain
-pose: 12.0  # (float) pose loss gain
+pose: 1.0  # (float) pose loss gain
 kobj: 1.0  # (float) keypoint obj loss gain
 label_smoothing: 0.0  # (float) label smoothing (fraction)
 nbs: 64  # (int) nominal batch size
