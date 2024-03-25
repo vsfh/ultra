@@ -40,18 +40,11 @@ from ultralytics.data.utils import HELP_URL, IMG_FORMATS
 from ultralytics.utils import yaml_load, IterableSimpleNamespace
 from ultralytics.utils.ops import xyxy2xywh
 from PIL import Image
-# DEFAULT_CFG_PATH = '/mnt/e/wsl/code/ultralytics/make_data_folder/cfg.yaml'
-DEFAULT_CFG_PATH = str(Path(os.path.abspath(__file__)).parent.parent)+'/cfg.yaml'
-DEFAULT_CFG_DICT = yaml_load(DEFAULT_CFG_PATH)
-for k, v in DEFAULT_CFG_DICT.items():
-    if isinstance(v, str) and v.lower() == 'none':
-        DEFAULT_CFG_DICT[k] = None
-DEFAULT_CFG_KEYS = DEFAULT_CFG_DICT.keys()
-DEFAULT_CFG = IterableSimpleNamespace(**DEFAULT_CFG_DICT)
+from ultralytics.data.dataset import BaseDataset
+
 smile_cls = ['05','07','10','13','15']
 face_cls = ['06','08','11','14','16']
 project = {
-    '18':['else',11],
     '00':['ceph',2],
     '01':['bite',8],
     '02':['pano',1],
@@ -61,295 +54,8 @@ project = {
     '12':['front',6],
     '17':['left',7],
     '19':['small',0],
+    '20':['f-ceph',11],
 }
-
-class BaseDataset(Dataset):
-    """
-    Base dataset class for loading and processing image data.
-
-    Args:
-        img_path (str): Path to the folder containing images.
-        imgsz (int, optional): Image size. Defaults to 640.
-        cache (bool, optional): Cache images to RAM or disk during training. Defaults to False.
-        augment (bool, optional): If True, data augmentation is applied. Defaults to True.
-        hyp (dict, optional): Hyperparameters to apply data augmentation. Defaults to None.
-        prefix (str, optional): Prefix to print in log messages. Defaults to ''.
-        rect (bool, optional): If True, rectangular training is used. Defaults to False.
-        batch_size (int, optional): Size of batches. Defaults to None.
-        stride (int, optional): Stride. Defaults to 32.
-        pad (float, optional): Padding. Defaults to 0.0.
-        single_cls (bool, optional): If True, single class training is used. Defaults to False.
-        classes (list): List of included classes. Default is None.
-        fraction (float): Fraction of dataset to utilize. Default is 1.0 (use all data).
-
-    Attributes:
-        im_files (list): List of image file paths.
-        labels (list): List of label data dictionaries.
-        ni (int): Number of images in the dataset.
-        ims (list): List of loaded images.
-        npy_files (list): List of numpy file paths.
-        transforms (callable): Image transformation function.
-    """
-
-    def __init__(self,
-                 img_path,
-                 imgsz=640,
-                 cache=False,
-                 augment=True,
-                 hyp=DEFAULT_CFG,
-                 prefix='',
-                 rect=False,
-                 batch_size=16,
-                 stride=32,
-                 pad=0.5,
-                 single_cls=False,
-                 classes=None,
-                 fraction=1.0):
-        """Initialize BaseDataset with given configuration and options."""
-        super().__init__()
-        self.img_path = img_path
-        self.imgsz = imgsz
-        self.augment = augment
-        self.single_cls = single_cls
-        self.prefix = prefix
-        self.fraction = fraction
-        if rect:
-            self.im_files = self.get_img_files(self.img_path)[-200:]
-        else:
-            self.im_files = self.get_img_files(self.img_path)[:-200]
-        self.labels = self.get_labels()
-        self.update_labels(include_class=classes)  # single_cls and include_class
-        self.ni = len(self.labels)  # number of images
-        self.rect = False
-        self.batch_size = batch_size
-        self.stride = stride
-        self.pad = pad
-        if self.rect:
-            assert self.batch_size is not None
-            self.set_rectangle()
-
-        # Buffer thread for mosaic images
-        self.buffer = []  # buffer size = batch size
-        self.max_buffer_length = min((self.ni, self.batch_size * 8, 1000)) if self.augment else 0
-
-        # Cache images
-        if cache == 'ram' and not self.check_cache_ram():
-            cache = False
-        self.ims, self.im_hw0, self.im_hw = [None] * self.ni, [None] * self.ni, [None] * self.ni
-        self.npy_files = [Path(f).with_suffix('.npy') for f in self.im_files]
-        if cache:
-            self.cache_images(cache)
-
-        # Transforms
-        self.transforms = self.build_transforms(hyp=hyp)
-
-    def get_img_files(self, img_path):
-        """Read image files."""
-        try:
-            f = []  # image files
-            for p in img_path if isinstance(img_path, list) else [img_path]:
-                p = Path(p)  # os-agnostic
-                if p.is_dir():  # dir
-                    f += glob.glob(str(p / '**' / '*.*'), recursive=True)
-                    # F = list(p.rglob('*.*'))  # pathlib
-                elif p.is_file():  # file
-                    with open(p) as t:
-                        t = t.read().strip().splitlines()
-                        parent = str(p.parent) + os.sep
-                        f += [x.replace('./', parent) if x.startswith('./') else x for x in t]  # local to global path
-                        # F += [p.parent / x.lstrip(os.sep) for x in t]  # local to global path (pathlib)
-                else:
-                    raise FileNotFoundError(f'{self.prefix}{p} does not exist')
-            im_files = sorted(x.replace('/', os.sep) for x in f if x.split('.')[-1].lower() in IMG_FORMATS)
-            im_files = [im for im in im_files if im.split('/')[-2]!= '18']
-            # self.img_files = sorted([x for x in f if x.suffix[1:].lower() in IMG_FORMATS])  # pathlib
-            assert im_files, f'{self.prefix}No images found in {img_path}'
-        except Exception as e:
-            raise FileNotFoundError(f'{self.prefix}Error loading data from {img_path}\n{HELP_URL}') from e
-        if self.fraction < 1:
-            im_files = im_files[:round(len(im_files) * self.fraction)]
-        return im_files
-
-    def update_labels(self, include_class: Optional[list]):
-        """Update labels to include only these classes (optional)."""
-        include_class_array = np.array(include_class).reshape(1, -1)
-        for i in range(len(self.labels)):
-            if include_class is not None:
-                cls = self.labels[i]['cls']
-                bboxes = self.labels[i]['bboxes']
-                segments = self.labels[i]['segments']
-                keypoints = self.labels[i]['keypoints']
-                j = (cls == include_class_array).any(1)
-                self.labels[i]['cls'] = cls[j]
-                self.labels[i]['bboxes'] = bboxes[j]
-                if segments:
-                    self.labels[i]['segments'] = [segments[si] for si, idx in enumerate(j) if idx]
-                if keypoints is not None:
-                    self.labels[i]['keypoints'] = keypoints[j]
-            if self.single_cls:
-                self.labels[i]['cls'][:, 0] = 0
-
-    def load_image(self, i, rect_mode=True):
-        """Loads 1 image from dataset index 'i', returns (im, resized hw)."""
-        im, f, fn = self.ims[i], self.im_files[i], self.npy_files[i]
-        if im is None:  # not cached in RAM
-            if fn.exists():  # load npy
-                try:
-                    im = np.load(fn)
-                except Exception as e:
-                    LOGGER.warning(f'{self.prefix}WARNING ⚠️ Removing corrupt *.npy image file {fn} due to: {e}')
-                    Path(fn).unlink(missing_ok=True)
-                    im = cv2.imread(f)  # BGR
-            else:  # read image
-                im = cv2.imread(f)  # BGR
-            if im is None:
-                raise FileNotFoundError(f'Image Not Found {f}')
-
-            h0, w0 = im.shape[:2]  # orig hw
-            if rect_mode:  # resize long side to imgsz while maintaining aspect ratio
-                r = self.imgsz / max(h0, w0)  # ratio
-                if r != 1:  # if sizes are not equal
-                    w, h = (min(math.ceil(w0 * r), self.imgsz), min(math.ceil(h0 * r), self.imgsz))
-                    im = cv2.resize(im, (w, h), interpolation=cv2.INTER_LINEAR)
-            elif not (h0 == w0 == self.imgsz):  # resize by stretching image to square imgsz
-                im = cv2.resize(im, (self.imgsz, self.imgsz), interpolation=cv2.INTER_LINEAR)
-
-            # Add to buffer if training with augmentations
-            if self.augment:
-                self.ims[i], self.im_hw0[i], self.im_hw[i] = im, (h0, w0), im.shape[:2]  # im, hw_original, hw_resized
-                self.buffer.append(i)
-                if len(self.buffer) >= self.max_buffer_length:
-                    j = self.buffer.pop(0)
-                    self.ims[j], self.im_hw0[j], self.im_hw[j] = None, None, None
-
-            return im, (h0, w0), im.shape[:2]
-
-        return self.ims[i], self.im_hw0[i], self.im_hw[i]
-
-    def cache_images(self, cache):
-        """Cache images to memory or disk."""
-        b, gb = 0, 1 << 30  # bytes of cached images, bytes per gigabytes
-        fcn = self.cache_images_to_disk if cache == 'disk' else self.load_image
-        with ThreadPool(NUM_THREADS) as pool:
-            results = pool.imap(fcn, range(self.ni))
-            pbar = TQDM(enumerate(results), total=self.ni, disable=LOCAL_RANK > 0)
-            for i, x in pbar:
-                if cache == 'disk':
-                    b += self.npy_files[i].stat().st_size
-                else:  # 'ram'
-                    self.ims[i], self.im_hw0[i], self.im_hw[i] = x  # im, hw_orig, hw_resized = load_image(self, i)
-                    b += self.ims[i].nbytes
-                pbar.desc = f'{self.prefix}Caching images ({b / gb:.1f}GB {cache})'
-            pbar.close()
-
-    def cache_images_to_disk(self, i):
-        """Saves an image as an *.npy file for faster loading."""
-        f = self.npy_files[i]
-        if not f.exists():
-            np.save(f.as_posix(), cv2.imread(self.im_files[i]), allow_pickle=False)
-
-    def check_cache_ram(self, safety_margin=0.5):
-        """Check image caching requirements vs available memory."""
-        b, gb = 0, 1 << 30  # bytes of cached images, bytes per gigabytes
-        n = min(self.ni, 30)  # extrapolate from 30 random images
-        for _ in range(n):
-            im = cv2.imread(random.choice(self.im_files))  # sample image
-            ratio = self.imgsz / max(im.shape[0], im.shape[1])  # max(h, w)  # ratio
-            b += im.nbytes * ratio ** 2
-        mem_required = b * self.ni / n * (1 + safety_margin)  # GB required to cache dataset into RAM
-        mem = psutil.virtual_memory()
-        cache = mem_required < mem.available  # to cache or not to cache, that is the question
-        if not cache:
-            LOGGER.info(f'{self.prefix}{mem_required / gb:.1f}GB RAM required to cache images '
-                        f'with {int(safety_margin * 100)}% safety margin but only '
-                        f'{mem.available / gb:.1f}/{mem.total / gb:.1f}GB available, '
-                        f"{'caching images ✅' if cache else 'not caching images ⚠️'}")
-        return cache
-
-    def set_rectangle(self):
-        """Sets the shape of bounding boxes for YOLO detections as rectangles."""
-        bi = np.floor(np.arange(self.ni) / self.batch_size).astype(int)  # batch index
-        nb = bi[-1] + 1  # number of batches
-
-        s = np.array([x.pop('shape') for x in self.labels])  # hw
-        ar = s[:, 0] / s[:, 1]  # aspect ratio
-        irect = ar.argsort()
-        self.im_files = [self.im_files[i] for i in irect]
-        self.labels = [self.labels[i] for i in irect]
-        ar = ar[irect]
-
-        # Set training image shapes
-        shapes = [[1, 1]] * nb
-        for i in range(nb):
-            ari = ar[bi == i]
-            mini, maxi = ari.min(), ari.max()
-            if maxi < 1:
-                shapes[i] = [maxi, 1]
-            elif mini > 1:
-                shapes[i] = [1, 1 / mini]
-
-        self.batch_shapes = np.ceil(np.array(shapes) * self.imgsz / self.stride + self.pad).astype(int) * self.stride
-        self.batch = bi  # batch index of image
-
-    def __getitem__(self, index):
-        """Returns transformed label information for given index."""
-        return self.transforms(self.get_image_and_label(index))
-
-    def get_image_and_label(self, index):
-        """Get and return label information from the dataset."""
-        label = deepcopy(self.labels[index])  # requires deepcopy() https://github.com/ultralytics/ultralytics/pull/1948
-        label.pop('shape', None)  # shape is for rect, remove it
-        label['img'], label['ori_shape'], label['resized_shape'] = self.load_image(index)
-        label['ratio_pad'] = (label['resized_shape'][0] / label['ori_shape'][0],
-                              label['resized_shape'][1] / label['ori_shape'][1])  # for evaluation
-        if self.rect:
-            label['rect_shape'] = self.batch_shapes[self.batch[index]]
-        return self.update_labels_info(label)
-
-    def __len__(self):
-        """Returns the length of the labels list for the dataset."""
-        return len(self.labels)
-
-    def update_labels_info(self, label):
-        """Custom your label format here."""
-        return label
-
-    def build_transforms(self, hyp=None):
-        """
-        Users can customize augmentations here.
-
-        Example:
-            ```python
-            if self.augment:
-                # Training transforms
-                return Compose([])
-            else:
-                # Val transforms
-                return Compose([])
-            ```
-        """
-        raise NotImplementedError
-
-    def get_labels(self):
-        """
-        Users can customize their own format here.
-
-        Note:
-            Ensure output is a dictionary with the following keys:
-            ```python
-            dict(
-                im_file=im_file,
-                shape=shape,  # format: (height, width)
-                cls=cls,
-                bboxes=bboxes, # xywh
-                segments=segments,  # xy
-                keypoints=keypoints, # xy
-                normalized=True, # or False
-                bbox_format="xyxy",  # or xywh, ltwh
-            )
-            ```
-        """
-        raise NotImplementedError
 
 from ultralytics.utils.instance import Bboxes
 class BboxesPose(Bboxes):
@@ -395,7 +101,7 @@ class InstancesPose(Instances):
         self.segments = segments
         
     def rot_90_bbox(self, M, degree):
-        self.poses[:, 0] = degree/270
+        self.poses[:, -1] = degree/270
 
         self._bboxes.rot_90(M, degree)
         
@@ -429,6 +135,8 @@ class InstancesPose(Instances):
             bbox_format=bbox_format,
             normalized=self.normalized,
         ) 
+
+from scipy.ndimage import rotate
 class RandomRot:
     """Resize image and padding for detection, instance segmentation, pose"""
 
@@ -445,13 +153,19 @@ class RandomRot:
         R = np.eye(3)
         angle = random.choice([0, 180, 90, 270])  # add 90deg rotations to small rotations
         
-        if 4 in labels['cls']:
-            R[:2] = cv2.getRotationMatrix2D(angle=180, center=(int(shape[0]//2), int(shape[1]//2)), scale=1)
-            img = cv2.warpAffine(img, R[:2], dsize=shape, borderValue=(0, 0, 0))
+        # if 4 in labels['cls']:
+        #     R[:2] = cv2.getRotationMatrix2D(angle=180, center=(int(shape[0]//2), int(shape[1]//2)), scale=1)
+        #     img = cv2.warpAffine(img, R[:2], dsize=shape, borderValue=(0, 0, 0))
             
         R[:2] = cv2.getRotationMatrix2D(angle=angle, center=(int(shape[0]//2), int(shape[1]//2)), scale=1)
-        
-        img = cv2.warpAffine(img, R[:2], dsize=shape, borderValue=(0, 0, 0))
+        # img = cv2.warpAffine(image, R[:2], dsize=shape, borderValue=(0, 0, 0))
+        if angle == 180:
+            img = img[::-1, ::-1]
+        elif angle == 270:
+            img = np.transpose(img, axes=(1, 0, 2))[:, ::-1]
+        elif angle == 90:
+            img = np.transpose(img, axes=(1, 0, 2))[::-1]
+        # img = rotate(image, angle=-angle, axes=(0, 1), reshape=False, mode='reflect') 
 
         labels['instances'].convert_bbox(format='xyxy')
         labels['instances'].denormalize(*labels['img'].shape[:2][::-1])
@@ -462,7 +176,7 @@ class RandomRot:
 class FormatPose:
     def __init__(self, **kwargs):
         self.format = Format(**kwargs)
-        self.pose_dim = 1
+        self.pose_dim = 2
     def __call__(self, labels):
         former_label = self.format(labels.copy())
         instances = labels.pop('instances')
@@ -471,7 +185,7 @@ class FormatPose:
             poses_list = []
             for i in range(len(instances.poses)):
                 single_pose = instances.poses[i]
-                if self.pose_dim == 1:
+                if self.pose_dim == 1 or self.pose_dim==2:
                     poses_list.append(single_pose)
                 elif self.pose_dim == 6:
                     matrix = R.from_euler('xyz', single_pose, degrees=True).as_matrix()
@@ -500,27 +214,31 @@ class YOLODataset(BaseDataset):
         self.use_segments = task == 'segment'
         self.use_keypoints = task == 'pose'
         self.use_obb = task == 'obb'
-        self.data = {'train':'/data/shenfeihong/classification/image/train', \
-                    'val':'/data/shenfeihong/classification/image/val', 
-                    'names':{2:'ceph',
-                            8:'bite',
-                            1:'pano',
-                            3:'upper',
-                            4:'lower',
-                            5:'right',
-                            6:'front',
-                            7:'left',
-                            9:'smile',
-                            10:'face',
-                            0:'small',}, 
-                    'nc':11}
+        self.data = {
+            # 'train':'/data/shenfeihong/classification/image/train',
+            # 'val':'/data/shenfeihong/classification/image/val',
+            'train':'/home/vsfh/data/cls/image/train_sub',
+            'val':'/home/vsfh/data/cls/image/train_sub', 
+            'names':{2:'ceph',
+                    8:'bite',
+                    1:'pano',
+                    3:'upper',
+                    4:'lower',
+                    5:'right',
+                    6:'front',
+                    7:'left',
+                    9:'smile',
+                    10:'face',
+                    0:'small',
+                    11:'f-ceph'}, 
+                    'nc':12}
         assert not (self.use_segments and self.use_keypoints), 'Can not use both segments and keypoints.'
         super().__init__(*args, **kwargs)
 
     def verify_image_label(self, args):
         from ultralytics.data.utils import exif_size, ImageOps, segments2boxes
         """Verify one image-label pair."""
-        pose_dim = 1
+        pose_dim = 2
         im_file, lb_file, prefix, keypoint, num_cls, nkpt, ndim = args
         # Number (missing, found, empty, corrupt), message, segments, keypoints
         nm, nf, ne, nc, msg, segments, keypoints = 0, 0, 0, 0, '', [], None
@@ -548,27 +266,25 @@ class YOLODataset(BaseDataset):
                 else:
                     context = json.load(f)
                     bbox = context['xyxy']
-                    if folder_name=='19' or folder_name=='03':
-                        euler = [0,0,0.1]
-                    elif folder_name=='04':
-                        euler = [0,0,179.9]
-                    else:
-                        euler = context['euler']
-                        if len(euler) != 3:
-                            euler = euler[0]
-
+                    euler = [0,0,0]
                     if folder_name in smile_cls:
                         cls = 9
                         a = bbox[0]-0.1*abs(bbox[2]-bbox[0])
                         c = bbox[2]+0.1*abs(bbox[2]-bbox[0])
                         b = bbox[1]-0.1*abs(bbox[3]-bbox[1])
                         d = bbox[3]+0.1*abs(bbox[3]-bbox[1])
+                        euler = context['euler']
+                        if len(euler) != 3:
+                            euler = euler[0]
                     elif folder_name in face_cls:
                         cls = 10
                         a = bbox[0]-0.1*abs(bbox[2]-bbox[0])
                         c = bbox[2]+0.1*abs(bbox[2]-bbox[0])
                         b = bbox[1]-0.1*abs(bbox[3]-bbox[1])
                         d = bbox[3]+0.1*abs(bbox[3]-bbox[1])
+                        euler = context['euler']
+                        if len(euler) != 3:
+                            euler = euler[0]
                     else:
                         cls = project[folder_name][1]
                         a,b,c,d = bbox
@@ -577,7 +293,7 @@ class YOLODataset(BaseDataset):
                     c = min(max(a,min(c/shape[1],0.999)),0.999)
                     d = min(max(b,min(d/shape[0],0.999)),0.999)
                     a,b,c,d = xyxy2xywh(np.array([a,b,c,d])).tolist()
-                    lb = [[cls, a,b,c,d,0]]
+                    lb = [[cls, a,b,c,d, euler[1]/90, 0]]
                     # if any(len(x) > 6 for x in lb) and (not keypoint):  # is segment
                     if False:  # is segment
                         classes = np.array([x[0] for x in lb], dtype=np.float32)
@@ -622,6 +338,33 @@ class YOLODataset(BaseDataset):
         # lb = lb[:, :5]
         return im_file, lb, shape, segments, keypoints, nm, nf, ne, nc, msg
 
+
+    def get_img_files(self, img_path):
+        """Read image files."""
+        try:
+            f = []  # image files
+            for p in img_path if isinstance(img_path, list) else [img_path]:
+                p = Path(p)  # os-agnostic
+                if p.is_dir():  # dir
+                    f += glob.glob(str(p / '**' / '*.*'), recursive=True)
+                    # F = list(p.rglob('*.*'))  # pathlib
+                elif p.is_file():  # file
+                    with open(p) as t:
+                        t = t.read().strip().splitlines()
+                        parent = str(p.parent) + os.sep
+                        f += [x.replace('./', parent) if x.startswith('./') else x for x in t]  # local to global path
+                        # F += [p.parent / x.lstrip(os.sep) for x in t]  # local to global path (pathlib)
+                else:
+                    raise FileNotFoundError(f'{self.prefix}{p} does not exist')
+            im_files = sorted(x.replace('/', os.sep) for x in f if x.split('.')[-1].lower() in IMG_FORMATS)
+            # im_files = [im for im in im_files if im.split('/')[-2]!= '18']
+            # self.img_files = sorted([x for x in f if x.suffix[1:].lower() in IMG_FORMATS])  # pathlib
+            assert im_files, f'{self.prefix}No images found in {img_path}'
+        except Exception as e:
+            raise FileNotFoundError(f'{self.prefix}Error loading data from {img_path}\n{HELP_URL}') from e
+        if self.fraction < 1:
+            im_files = im_files[:round(len(im_files) * self.fraction)]
+        return im_files
     
     def cache_labels(self, path=Path('./labels.cache')):
         """
@@ -683,6 +426,7 @@ class YOLODataset(BaseDataset):
         # for path in im_files:
         #     label_files.append(path.replace('.jpg','.json').replace('img','label'))
         json_dir = '/data/shenfeihong/classification/network_res/'
+        json_dir = '/mnt/hdd/data/cls/network_res/'
         for x in im_files:
             label_files.append(os.path.join(json_dir, x.split('/')[-2], os.path.basename(x).replace('jpg', 'json')))
         return label_files
@@ -728,13 +472,6 @@ class YOLODataset(BaseDataset):
 
     def build_transforms(self, hyp=None):
         """Builds and appends transforms to the list."""
-        # if self.augment:
-        #     hyp.mosaic = hyp.mosaic if self.augment and not self.rect else 0.0
-        #     hyp.mixup = hyp.mixup if self.augment and not self.rect else 0.0
-        #     transforms = Compose([LetterBox(new_shape=(self.imgsz, self.imgsz), scaleup=False), RandomRot(),])
-        #     # transforms = v8_transforms(self, self.imgsz, hyp)
-        # else:
-        #     transforms = Compose([LetterBox(new_shape=(self.imgsz, self.imgsz), scaleup=False)])
         transforms = Compose([LetterBox(new_shape=(self.imgsz, self.imgsz), scaleup=False), RandomRot(),])
 
         transforms.append(

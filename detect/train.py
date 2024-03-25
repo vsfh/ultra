@@ -52,16 +52,23 @@ sys.path.append('.')
 from .dataset import YOLODataset
 from .val import DetectionValidator
 
-from ultralytics.utils import yaml_load, IterableSimpleNamespace
-DEFAULT_CFG_PATH = str(Path(os.path.abspath(__file__)).parent.parent)+'/cfg.yaml'
+import cv2
+from ultralytics.data.augment import LetterBox
 
-DEFAULT_CFG_DICT = yaml_load(DEFAULT_CFG_PATH)
-for k, v in DEFAULT_CFG_DICT.items():
-    if isinstance(v, str) and v.lower() == 'none':
-        DEFAULT_CFG_DICT[k] = None
-DEFAULT_CFG_KEYS = DEFAULT_CFG_DICT.keys()
-DEFAULT_CFG = IterableSimpleNamespace(**DEFAULT_CFG_DICT)
+def pre_transform(path):
+    img = cv2.imread(path)
+    letterbox = LetterBox(640, auto=False)
+    im = [letterbox(image=img)]
 
+    im = np.stack(im)
+    im = im[..., ::-1].transpose((0, 3, 1, 2))  # BGR to RGB, BHWC to BCHW, (n, 3, h, w)
+    im = np.ascontiguousarray(im)  # contiguous
+    im = torch.from_numpy(im)
+
+    im = im.cuda()
+    im = im.float()  # uint8 to fp16/32
+    im /= 255  # 0 - 255 to 0.0 - 1.0
+    return im
 class BaseTrainer:
     """
     BaseTrainer.
@@ -139,28 +146,24 @@ class BaseTrainer:
         # Model and Dataset
         self.model = check_model_file_from_stem(self.args.model)  # add suffix, i.e. yolov8n -> yolov8n.pt
         # try:
-        if self.args.task == 'classify':
-            self.data = {'train':'/data/shenfeihong/classification/brace/iscan', \
-                'val':'/data/shenfeihong/classification/brace/ultra', \
-                'nc':2, 'names':{0:'none', 1:'not_none'}}
-        elif self.args.data.split('.')[-1] in ('yaml', 'yml') or self.args.task in ('detect', 'segment', 'pose'):
-            # self.data = check_det_dataset(self.args.data)
-            self.data = {'train':'/data/shenfeihong/classification/image/train', \
-                        'val':'/data/shenfeihong/classification/image/val', 
-                        'names':{2:'ceph',
-                                 8:'bite',
-                                 1:'pano',
-                                 3:'upper',
-                                 4:'lower',
-                                 5:'right',
-                                 6:'front',
-                                 7:'left',
-                                 9:'smile',
-                                 10:'face',
-                                 0:'small',}, 
-                        'nc':11}
-            if 'yaml_file' in self.data:
-                self.args.data = self.data['yaml_file']  # for validating 'yolo train data=url.zip' usage
+        self.data = {
+            # 'train':'/data/shenfeihong/classification/image/train', \
+            # 'val':'/data/shenfeihong/classification/image/val', 
+            'train':'/home/vsfh/data/cls/image/train_sub',
+            'val':'/home/vsfh/data/cls/image/train_sub', 
+            'names':{2:'ceph',
+                        8:'bite',
+                        1:'pano',
+                        3:'upper',
+                        4:'lower',
+                        5:'right',
+                        6:'front',
+                        7:'left',
+                        9:'smile',
+                        10:'face',
+                        0:'small',
+                        11: 'f-ceph'}, 
+                    'nc':12}
         # except Exception as e:
         #     raise RuntimeError(emojis(f"Dataset '{clean_url(self.args.data)}' error ❌ {e}")) from e
 
@@ -338,7 +341,8 @@ if __name__ == "__main__":
             self.validator = self.get_validator()
             metric_keys = self.validator.metrics.keys + self.label_loss_items(prefix='val')
             self.metrics = dict(zip(metric_keys, [0] * len(metric_keys)))
-            self.ema = ModelEMA(self.model)
+            self.ema = None
+            # self.ema = ModelEMA(self.model)
             if self.args.plots:
                 self.plot_training_labels()
 
@@ -449,8 +453,8 @@ if __name__ == "__main__":
                         ('%11s' * 2 + '%11.4g' * (2 + loss_len)) %
                         (f'{epoch + 1}/{self.epochs}', mem, *losses, batch['cls'].shape[0], batch['img'].shape[-1]))
                     self.run_callbacks('on_batch_end')
-                    if self.args.plots and ni in self.plot_idx:
-                        self.plot_training_samples(batch, ni)
+                if ni<3:
+                    self.plot_training_samples(batch, ni)
 
                 self.run_callbacks('on_train_batch_end')
 
@@ -458,7 +462,7 @@ if __name__ == "__main__":
             self.run_callbacks('on_train_epoch_end')
             if RANK in (-1, 0):
                 final_epoch = epoch + 1 == self.epochs
-                self.ema.update_attr(self.model, include=['yaml', 'nc', 'args', 'names', 'stride', 'class_weights'])
+                # self.ema.update_attr(self.model, include=['yaml', 'nc', 'args', 'names', 'stride', 'class_weights'])
 
                 # Validation
                 if self.args.val or final_epoch or self.stopper.possible_stop or self.stop:
@@ -516,9 +520,9 @@ if __name__ == "__main__":
         ckpt = {
             'epoch': self.epoch,
             'best_fitness': self.best_fitness,
-            'model': deepcopy(de_parallel(self.model)).half(),
-            'ema': deepcopy(self.ema.ema).half(),
-            'updates': self.ema.updates,
+            'model': deepcopy(de_parallel(self.model)),
+            # 'ema': deepcopy(self.ema.ema).half(),
+            # 'updates': self.ema.updates,
             'optimizer': self.optimizer.state_dict(),
             'train_args': vars(self.args),  # save as dict
             'train_metrics': metrics,
@@ -901,23 +905,25 @@ class DetectPose(Detect):
     def __init__(self, nc=80, ch=()):  # detection layer
         super().__init__(nc=nc, ch=ch)
         c4 = 64
-        self.pose_dim = 1
+        self.pose_dim = 2
         self.cv4 = nn.ModuleList(nn.Sequential(Conv(x, c4, 3), Conv(c4, c4, 3), nn.Conv2d(c4, self.pose_dim, 1)) for x in ch)
         self.no = self.nc + self.reg_max * 4
         self.detec = Detect.forward
         
     def forward(self, x):
         """Concatenates and returns predicted bounding boxes and class probabilities."""
+        poses = []
         for i in range(self.nl):
             fea = self.cv4[i](x[i])
-            if i == 0:
-                pose = fea.view(fea.shape[0], fea.shape[1], -1).mean(-1)
-            else:
-                pose += fea.view(fea.shape[0], fea.shape[1], -1).mean(-1)
+            poses.append(fea.view(fea.shape[0], fea.shape[1], -1))
+            
         x = self.detec(self, x)
-        # if self.training:  # Training path
-        #     return x, pose
-        return x, pose
+        if self.training:  # Training path
+            return x, poses
+        else:
+            with torch.no_grad():
+                inf_pose = torch.cat([pose.view(pose.shape[0], pose.shape[1], -1) for pose in poses], 2)
+            return x, inf_pose.mean(-1)
 
 class PoseDetectionModel(DetectionModel):
     def __init__(self, cfg='yolov8n.yaml', ch=3, nc=None, verbose=True):  # model, input channels, number of classes
@@ -1053,6 +1059,7 @@ class PoseDetectionModel(DetectionModel):
         return self.predict(x, *args, **kwargs)
     
     def loss(self, batch, preds=None):
+        
         if not hasattr(self, 'criterion'):
             self.criterion = self.init_criterion()
         if preds is None:
@@ -1064,6 +1071,37 @@ class PoseDetectionModel(DetectionModel):
     def init_criterion(self):
         """Initialize the loss criterion for the DetectionModel."""
         return PoseDetectionLoss(self) 
+    
+    def _predict_once(self, x, profile=False, visualize=False, embed=None):
+        """
+        Perform a forward pass through the network.
+
+        Args:
+            x (torch.Tensor): The input tensor to the model.
+            profile (bool):  Print the computation time of each layer if True, defaults to False.
+            visualize (bool): Save the feature maps of the model if True, defaults to False.
+            embed (list, optional): A list of feature vectors/embeddings to return.
+
+        Returns:
+            (torch.Tensor): The last output of the model.
+        """
+        y, dt, embeddings = [], [], []  # outputs
+        for m in self.model:
+            if m.f != -1:  # if not from previous layer
+                x = y[m.f] if isinstance(m.f, int) else [x if j == -1 else y[j] for j in m.f]  # from earlier layers
+            if profile:
+                self._profile_one_layer(m, x, dt)
+            if isinstance(m, DetectPose):
+                a = 1
+            x = m(x)  # run
+            y.append(x if m.i in self.save else None)  # save output
+            if visualize:
+                feature_visualization(x, m.type, m.i, save_dir=visualize)
+            if embed and m.i in embed:
+                embeddings.append(nn.functional.adaptive_avg_pool2d(x, (1, 1)).squeeze(-1).squeeze(-1))  # flatten
+                if m.i == max(embed):
+                    return torch.unbind(torch.cat(embeddings, 1), dim=0)
+        return x
     
 def normalize_vector(v):
     v_mag = torch.linalg.norm(v, dim=1, keepdim=True)
@@ -1143,11 +1181,12 @@ class PoseAssigner(TaskAlignedAssigner):
         target_scores = torch.where(fg_scores_mask > 0, target_scores, 0)
 
         return target_labels, (target_bboxes, target_poses), target_scores
+
 class PoseDetectionLoss(v8DetectionLoss):
     def __init__(self, model):
         super().__init__(model)
         self.assigner = PoseAssigner(topk=10, num_classes=self.nc, alpha=0.5, beta=6.0)
-        self.pose_dim = 1
+        self.pose_dim = 2
         self.no = self.nc + self.reg_max * 4
         
     def pose_loss(self, pred_pose, gt_pose):
@@ -1165,7 +1204,9 @@ class PoseDetectionLoss(v8DetectionLoss):
         hyp_pose = 1.5
         loss = torch.zeros(4, device=self.device)  # box, cls, dfl
         feats = preds[1] if isinstance(preds, tuple) else preds
-        pred_poses = pred_poses[1] if isinstance(pred_poses, tuple) else pred_poses
+        if isinstance(pred_poses, list):
+            pred_poses = torch.cat([pose.view(pose.shape[0], pose.shape[1], -1) for pose in pred_poses], 2)
+            pred_poses = pred_poses.mean(-1)
         pred_distri, pred_scores, = torch.cat([xi.view(feats[0].shape[0], self.no, -1) for xi in feats], 2).split(
             (self.reg_max * 4, self.nc, ), 1)
 

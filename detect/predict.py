@@ -2,7 +2,7 @@
 
 from ultralytics.engine.results import Results
 from ultralytics.utils import ops
-
+import torch
 # Ultralytics YOLO 🚀, AGPL-3.0 license
 """
 Run prediction on images, videos, directories, globs, YouTube, webcam, streams, etc.
@@ -32,18 +32,7 @@ Usage - formats:
                               yolov8n_edgetpu.tflite     # TensorFlow Edge TPU
                               yolov8n_paddle_model       # PaddlePaddle
 """
-from pathlib import Path
 from ultralytics.data.augment import LetterBox
-from ultralytics.utils import yaml_load, IterableSimpleNamespace
-import os
-DEFAULT_CFG_PATH = '/mnt/e/wsl/code/ultralytics/make_data_folder/cfg.yaml'
-DEFAULT_CFG_PATH = str(Path(os.path.abspath(__file__)).parent.parent)+'/cfg.yaml'
-DEFAULT_CFG_DICT = yaml_load(DEFAULT_CFG_PATH)
-for k, v in DEFAULT_CFG_DICT.items():
-    if isinstance(v, str) and v.lower() == 'none':
-        DEFAULT_CFG_DICT[k] = None
-DEFAULT_CFG_KEYS = DEFAULT_CFG_DICT.keys()
-DEFAULT_CFG = IterableSimpleNamespace(**DEFAULT_CFG_DICT)
 
 STREAM_WARNING = """
 WARNING ⚠️ inference results will accumulate in RAM unless `stream=True` is passed, causing potential out-of-memory
@@ -88,9 +77,8 @@ class DetectionPredictor(BasePredictor):
         return [letterbox(image=x) for x in im]
     def postprocess(self, preds, img, orig_imgs):
         """Post-processes predictions and returns a list of Results objects."""
-        if isinstance(preds, (list, tuple)):  # YOLOv8 model in validation model, output = (inference_out, loss_out)
-            print(preds[1])
-            preds = preds[0]  # select only inference output
+        preds, pose = preds
+        print(pose)
         preds = ops.non_max_suppression(preds,
                                         self.args.conf,
                                         self.args.iou,

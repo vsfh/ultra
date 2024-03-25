@@ -28,6 +28,7 @@ from ultralytics.utils.plotting import *
 from ultralytics.utils.ops import *
 from scipy.spatial.transform import Rotation as R
 from ultralytics.engine.validator import BaseValidator
+
 class PoseAnnotator(Annotator):
     def pose_label(self, pose, box, size = 100):
         pose_dim = len(pose)
@@ -40,6 +41,8 @@ class PoseAnnotator(Annotator):
             pose = R.from_euler('xyz', [0,0,-270*pose[2]], degrees=True).as_matrix()
         if pose_dim==1:
             pose = R.from_euler('xyz', [0,0,-270*pose[0]], degrees=True).as_matrix()
+        if pose_dim==2:
+            pose = R.from_euler('xyz', [0, 90*pose[0],-270*pose[1]], degrees=True).as_matrix()
         tdx = int((box[0]+box[2])/2)
         tdy = int((box[1]+box[3])/2)
         
@@ -67,7 +70,6 @@ class PoseAnnotator(Annotator):
         self.draw.line([(int(tdx), int(tdy)), (int(x1),int(y1))], fill='red')
         self.draw.line([(int(tdx), int(tdy)), (int(x2),int(y2))], fill='blue')
         self.draw.line([(int(tdx), int(tdy)), (int(x3),int(y3))], fill='green')
-        
         
 @threaded
 def plot_images(images,
@@ -97,7 +99,7 @@ def plot_images(images,
         kpts = kpts.cpu().numpy()
     if isinstance(batch_idx, torch.Tensor):
         batch_idx = batch_idx.cpu().numpy()
-
+    pose_dim = 2
     max_size = 1920  # max image size
     bs, _, h, w = images.shape  # batch size, _, height, width
     bs = min(bs, max_subplots)  # limit plot images
@@ -152,7 +154,7 @@ def plot_images(images,
                         label = f'{c}' if labels else f'{c} {conf[j]:.1f}'
                         annotator.box_label(box, label, color=color, rotated=is_obb)
                         if not poses is None:
-                            pose = poses[i].view(1)
+                            pose = poses[i].view(pose_dim)
                             if isinstance(pose, torch.Tensor):
                                 pose = pose.cpu().numpy()
                             # if len(pose.shape)!=1:
@@ -213,115 +215,6 @@ def plot_images(images,
     else:
         return np.asarray(annotator.im)
     
-def _non_max_suppression(
-    prediction,
-    conf_thres=0.25,
-    iou_thres=0.45,
-    classes=None,
-    agnostic=False,
-    multi_label=False,
-    labels=(),
-    max_det=300,
-    nc=0,  # number of classes (optional)
-    max_time_img=0.05,
-    max_nms=30000,
-    max_wh=7680,
-    rotated=False,
-    contain_pose=False,
-    poses=None
-):
-    # Checks
-    pose_dim = 1
-    assert 0 <= conf_thres <= 1, f'Invalid Confidence threshold {conf_thres}, valid values are between 0.0 and 1.0'
-    assert 0 <= iou_thres <= 1, f'Invalid IoU {iou_thres}, valid values are between 0.0 and 1.0'
-    if isinstance(prediction, (list, tuple)):  # YOLOv8 model in validation model, output = (inference_out, loss_out)
-        prediction = prediction[0]  # select only inference output
-    if contain_pose:
-        poses_output = [torch.zeros((0, pose_dim), device=prediction.device)] * prediction.shape[0]
-
-    bs = prediction.shape[0]  # batch size
-    nc = nc or (prediction.shape[1] - 4)  # number of classes
-    nm = prediction.shape[1] - nc - 4
-    mi = 4 + nc  # mask start index
-    xc = prediction[:, 4:mi].amax(1) > conf_thres  # candidates
-
-    # Settings
-    # min_wh = 2  # (pixels) minimum box width and height
-    time_limit = 0.5 + max_time_img * bs  # seconds to quit after
-    multi_label &= nc > 1  # multiple labels per box (adds 0.5ms/img)
-
-    prediction = prediction.transpose(-1, -2)  # shape(1,84,6300) to shape(1,6300,84)
-    if contain_pose:
-        poses = poses.transpose(-1, -2)
-    if not rotated:
-        prediction[..., :4] = xywh2xyxy(prediction[..., :4])  # xywh to xyxy
-
-    t = time.time()
-    output = [torch.zeros((0, 6 + nm), device=prediction.device)] * bs
-    for xi, x_ in enumerate(prediction):  # image index, image inference
-        # Apply constraints
-        # x[((x[:, 2:4] < min_wh) | (x[:, 2:4] > max_wh)).any(1), 4] = 0  # width-height
-        x = x_[xc[xi]]  # confidence
-        if contain_pose:
-            pose = poses[xi]
-            pose = pose[xc[xi]]
-        # Cat apriori labels if autolabelling
-        if labels and len(labels[xi]) and not rotated:
-            lb = labels[xi]
-            v = torch.zeros((len(lb), nc + nm + 4), device=x.device)
-            v[:, :4] = xywh2xyxy(lb[:, 1:5])  # box
-            v[range(len(lb)), lb[:, 0].long() + 4] = 1.0  # cls
-            x = torch.cat((x, v), 0)
-
-        # If none remain process next image
-        if not x.shape[0]:
-            continue
-
-        # Detections matrix nx6 (xyxy, conf, cls)
-        box, cls, mask = x.split((4, nc, nm), 1)
-
-        if multi_label:
-            i, j = torch.where(cls > conf_thres)
-            x = torch.cat((box[i], x[i, 4 + j, None], j[:, None].float(), mask[i]), 1)
-        else:  # best class only
-            conf, j = cls.max(1, keepdim=True)
-            x = torch.cat((box, conf, j.float(), mask), 1)[conf.view(-1) > conf_thres]
-
-        # Filter by class
-        if classes is not None:
-            x = x[(x[:, 5:6] == torch.tensor(classes, device=x.device)).any(1)]
-
-        # Check shape
-        n = x.shape[0]  # number of boxes
-        if not n:  # no boxes
-            continue
-        if n > max_nms:  # excess boxes
-            if contain_pose:
-                pose = pose[x[:, 4].argsort(descending=True)[:max_nms]]
-            x = x[x[:, 4].argsort(descending=True)[:max_nms]]  # sort by confidence and remove excess boxes
-
-
-        # Batched NMS
-        c = x[:, 5:6] * (0 if agnostic else max_wh)  # classes
-        scores = x[:, 4]  # scores
-        if rotated:
-            boxes = torch.cat((x[:, :2] + c, x[:, 2:4], x[:, -1:]), dim=-1)  # xywhr
-            i = nms_rotated(boxes, scores, iou_thres)
-        else:
-            boxes = x[:, :4] + c  # boxes (offset by class)
-            i = torchvision.ops.nms(boxes, scores, iou_thres)  # NMS
-        i = i[:max_det]  # limit detections
-
-        output[xi] = x[i]
-        if contain_pose:
-            poses_output[xi] = pose[i]
-        if (time.time() - t) > time_limit:
-            LOGGER.warning(f'WARNING ⚠️ NMS time limit {time_limit:.3f}s exceeded')
-            break  # time limit exceeded
-    if contain_pose:
-        return output, poses_output
-    return output
-
 class DetectionValidator(BaseValidator):
     """
     A class extending the BaseValidator class for validation based on a detection model.
@@ -358,9 +251,9 @@ class DetectionValidator(BaseValidator):
         if self.training:
             self.device = trainer.device
             self.data = trainer.data
-            self.args.half = self.device.type != 'cpu'  # force FP16 val during training
-            model = trainer.ema.ema or trainer.model
-            model = model.half() if self.args.half else model.float()
+            self.args.half = False  # force FP16 val during training
+            model = trainer.model
+            model = model.float()
             # self.model = model
             self.loss = torch.zeros_like(trainer.loss_items, device=trainer.device)
             self.args.plots &= trainer.stopper.possible_stop or (trainer.epoch == trainer.epochs - 1)
@@ -374,7 +267,7 @@ class DetectionValidator(BaseValidator):
                                 fp16=self.args.half)
             # self.model = model
             self.device = model.device  # update device
-            self.args.half = model.fp16  # update half
+            self.args.half = False  # update half
             stride, pt, jit, engine = model.stride, model.pt, model.jit, model.engine
             imgsz = check_imgsz(self.args.imgsz, stride=stride)
             if engine:
@@ -382,28 +275,24 @@ class DetectionValidator(BaseValidator):
             elif not pt and not jit:
                 self.args.batch = 1  # export.py models default to batch-size 1
                 LOGGER.info(f'Forcing batch=1 square inference (1,3,{imgsz},{imgsz}) for non-PyTorch models')
-
-            if str(self.args.data).split('.')[-1] in ('yaml', 'yml'):
-                self.data = check_det_dataset(self.args.data)
-            elif self.args.task == 'classify':
-                self.data = {'train':'/data/shenfeihong/classification/brace/iscan', \
-                'val':'/data/shenfeihong/classification/brace/ultra', \
-                'nc':2, 'names':{0:'none', 1:'not_none'}}
-            else:
-                self.data = {'train':'/data/shenfeihong/classification/image/train', \
-                            'val':'/data/shenfeihong/classification/image/val', 
-                            'names':{2:'ceph',
-                                    8:'bite',
-                                    1:'pano',
-                                    3:'upper',
-                                    4:'lower',
-                                    5:'right',
-                                    6:'front',
-                                    7:'left',
-                                    9:'smile',
-                                    10:'face',
-                                    0:'small',}, 
-                            'nc':11}
+            self.data = {
+                # 'train':'/data/shenfeihong/classification/image/train',
+                # 'val':'/data/shenfeihong/classification/image/val',
+                'train':'/home/vsfh/data/cls/image/train_sub',
+                'val':'/home/vsfh/data/cls/image/train_sub', 
+                'names':{2:'ceph',
+                        8:'bite',
+                        1:'pano',
+                        3:'upper',
+                        4:'lower',
+                        5:'right',
+                        6:'front',
+                        7:'left',
+                        9:'smile',
+                        10:'face',
+                        0:'small',
+                        11: 'f-ceph'}, 
+                        'nc':12}
             if self.device.type in ('cpu', 'mps'):
                 self.args.workers = 0  # faster CPU val as time dominated by inference, not dataloading
             if not pt:
@@ -430,6 +319,7 @@ class DetectionValidator(BaseValidator):
             with dt[1]:
                 preds = model(batch['img'], augment=augment)
 
+
             # Loss
             with dt[2]:
                 if self.training:
@@ -449,6 +339,9 @@ class DetectionValidator(BaseValidator):
                     self.plot_predictions(batch, preds, batch_i, poses)
                 else:
                     self.plot_predictions(batch, preds, batch_i)
+                # torch.save(batch['img'], 'img.pt')
+                # torch.save(preds[1], 'pred.pt')
+                # torch.save({'model':model}, 'model.pt')
             self.run_callbacks('on_val_batch_end')
         stats = self.get_stats()
         self.check_stats(stats)
@@ -510,15 +403,18 @@ class DetectionValidator(BaseValidator):
 
     def postprocess(self, preds):
         """Apply Non-maximum suppression to prediction outputs."""
-        predition, pose = preds
-        return non_max_suppression(predition,
+        predition, pred_poses = preds
+        if isinstance(pred_poses, list):
+            pred_poses = torch.cat([pose.view(pose.shape[0], pose.shape[1], -1) for pose in pred_poses], 2)
+            pred_poses = pred_poses.mean(-1)
+        return ops.non_max_suppression(predition,
                                 self.args.conf,
                                 self.args.iou,
                                 labels=self.lb,
                                 multi_label=False,
                                 agnostic=self.args.single_cls,
                                 max_det=self.args.max_det,
-                                ), pose
+                                ), pred_poses
 
 
     def _prepare_batch(self, si, batch):

@@ -1,25 +1,25 @@
-
-
-from ultralytics.nn.tasks import attempt_load_one_weight, guess_model_task, nn, yaml_model_load
-from ultralytics.utils import yaml_load
-# from ultralytics import YOLO
-import cv2
 import sys
 sys.path.append('.')
-from cls.trainer import ClassificationTrainerNew
 from yolo import YOLO
 
 
 def train_new():
-    model = YOLO('./cls.yaml')
+    model = YOLO('yolov8n.pt')
     # model.train(device='4,5,6,7')
-    model.train(epochs=5000)
+    model.train(epochs=10)
     
+def try_():
+    import torch
+    model = YOLO('/home/vsfh/code/ultra/runs/detect/train4/weights/best.pt')
+    ckpt = torch.load('/home/vsfh/code/ultra/runs/detect/train4/weights/best.pt')
+    # model.model.model.load_state_dict(ckpt)
+    # model.model.model.eval()
+    img_path = '/home/vsfh/data/cls/image/error/'
+    model.predict(img_path)
 def predict_new():
-    import os
-    model = YOLO('/home/gregory/code/ultra/runs/detect/train2/weights/last.pt')
-    img_path = '/data/shenfeihong/classification/image/val/04'
-    model.predict(os.path.join(img_path, '58524563764247298_9388.jpg'))
+    model = YOLO('/home/vsfh/code/ultra/runs/detect/train2/weights/best.pt')
+    model.predict('/home/vsfh/data/cls/image/error/58443579409700480_105149.jpg', device='cuda')
+    
     
 # def predict_new():
 #     import os
@@ -43,4 +43,6 @@ def export_new():
     model.export(format="torchscript",dynamic=True,imgsz=640,device='cuda')
 
 if __name__=='__main__':
-    predict_new()
+    # try_()
+    train_new()
+    # predict_new()
