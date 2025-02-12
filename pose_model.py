@@ -5,8 +5,8 @@ from yolo import YOLO
 
 def train_new():
     model = YOLO('yolov8n.pt')
-    # model.train(device='4,5,6,7')
-    model.train(epochs=10)
+    # model.train(device='4,5,6,7',epochs=20,batch=64)
+    model.train(batch=16)
     
 def try_():
     import torch
@@ -16,9 +16,10 @@ def try_():
     # model.model.model.eval()
     img_path = '/home/vsfh/data/cls/image/error/'
     model.predict(img_path)
+    
 def predict_new():
-    model = YOLO('/home/vsfh/code/ultra/runs/detect/train2/weights/best.pt')
-    model.predict('/home/vsfh/data/cls/image/error/58443579409700480_105149.jpg', device='cuda')
+    model = YOLO('/home/gregory/code/ultra/runs/detect/train/weights/best.pt')
+    model.predict('/home/gregory/code/ultra/aaa.jpg', device='cuda')
     
     
 # def predict_new():
@@ -39,10 +40,11 @@ def predict_new():
 
 def export_new():
     # model = YOLO('/home/gregory/code/ultralytics/make_data_folder/runs/detect/train2/weights/best.pt')
-    model = YOLO('/home/gregory/code/ultra/runs/detect/train2/weights/best.pt')
+    model = YOLO('/home/gregory/code/ultra/runs/detect/train3/weights/best.pt')
     model.export(format="torchscript",dynamic=True,imgsz=640,device='cuda')
 
 if __name__=='__main__':
     # try_()
-    train_new()
+    # train_new()
     # predict_new()
+    export_new()

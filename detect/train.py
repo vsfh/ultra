@@ -39,8 +39,8 @@ from torch import nn, optim
 from ultralytics.cfg import get_cfg, get_save_dir
 from ultralytics.data.utils import check_cls_dataset, check_det_dataset
 from ultralytics.nn.tasks import attempt_load_one_weight, attempt_load_weights
-from ultralytics.utils import (DEFAULT_CFG, LOGGER, RANK, TQDM, __version__, callbacks, clean_url, colorstr, emojis,
-                               yaml_save)
+from ultralytics.utils import (LOGGER, RANK, TQDM, __version__, callbacks, clean_url, colorstr, emojis,
+                               yaml_load, yaml_save, IterableSimpleNamespace)
 from ultralytics.utils.autobatch import check_train_batch_size
 from ultralytics.utils.checks import check_amp, check_file, check_imgsz, check_model_file_from_stem, print_args
 from ultralytics.utils.dist import *
@@ -55,20 +55,15 @@ from .val import DetectionValidator
 import cv2
 from ultralytics.data.augment import LetterBox
 
-def pre_transform(path):
-    img = cv2.imread(path)
-    letterbox = LetterBox(640, auto=False)
-    im = [letterbox(image=img)]
 
-    im = np.stack(im)
-    im = im[..., ::-1].transpose((0, 3, 1, 2))  # BGR to RGB, BHWC to BCHW, (n, 3, h, w)
-    im = np.ascontiguousarray(im)  # contiguous
-    im = torch.from_numpy(im)
+DEFAULT_CFG_PATH = str(Path(os.path.abspath(__file__)).parent.parent)+'/cfg.yaml'
+DEFAULT_CFG_DICT = yaml_load(DEFAULT_CFG_PATH)
+for k, v in DEFAULT_CFG_DICT.items():
+    if isinstance(v, str) and v.lower() == 'none':
+        DEFAULT_CFG_DICT[k] = None
+DEFAULT_CFG_KEYS = DEFAULT_CFG_DICT.keys()
+DEFAULT_CFG = IterableSimpleNamespace(**DEFAULT_CFG_DICT)
 
-    im = im.cuda()
-    im = im.float()  # uint8 to fp16/32
-    im /= 255  # 0 - 255 to 0.0 - 1.0
-    return im
 class BaseTrainer:
     """
     BaseTrainer.
@@ -147,10 +142,10 @@ class BaseTrainer:
         self.model = check_model_file_from_stem(self.args.model)  # add suffix, i.e. yolov8n -> yolov8n.pt
         # try:
         self.data = {
-            # 'train':'/data/shenfeihong/classification/image/train', \
-            # 'val':'/data/shenfeihong/classification/image/val', 
-            'train':'/home/vsfh/data/cls/image/train_sub',
-            'val':'/home/vsfh/data/cls/image/train_sub', 
+            'train':'/data/shenfeihong/classification/train_sub',
+            'val':'/data/shenfeihong/classification/train_sub',
+            # 'train':'/home/vsfh/data/cls/image/train_sub',
+            # 'val':'/home/vsfh/data/cls/image/train_sub', 
             'names':{2:'ceph',
                         8:'bite',
                         1:'pano',
@@ -1185,7 +1180,7 @@ class PoseAssigner(TaskAlignedAssigner):
 class PoseDetectionLoss(v8DetectionLoss):
     def __init__(self, model):
         super().__init__(model)
-        self.assigner = PoseAssigner(topk=10, num_classes=self.nc, alpha=0.5, beta=6.0)
+        self.assigner = TaskAlignedAssigner(topk=10, num_classes=self.nc, alpha=0.5, beta=6.0)
         self.pose_dim = 2
         self.no = self.nc + self.reg_max * 4
         
@@ -1227,23 +1222,20 @@ class PoseDetectionLoss(v8DetectionLoss):
         gt_poses = torch.zeros(batch_size, self.pose_dim, device=self.device).type(dtype)
         for i, pose in enumerate(batch['poses']):
             if pose.shape[0]:
-              gt_poses[i] = pose  
+                if pose.shape[0]==4:
+                    pose = pose[:2]        
+                gt_poses[i] = pose  
             
         
 
         # Pboxes
         pred_bboxes = self.bbox_decode(anchor_points, pred_distri)  # xyxy, (b, h*w, 4)
 
-        _, target_bboxes_poses, target_scores, fg_mask, _ = self.assigner(
+        _, target_bboxes, target_scores, fg_mask, _ = self.assigner(
             pred_scores.detach().sigmoid(), (pred_bboxes.detach() * stride_tensor).type(gt_bboxes.dtype),
-            anchor_points * stride_tensor, gt_labels, gt_bboxes, gt_poses, mask_gt)
+            anchor_points * stride_tensor, gt_labels, gt_bboxes, mask_gt)
 
         target_scores_sum = max(target_scores.sum(), 1)
-        if len(target_bboxes_poses) == 2:
-            target_bboxes, target_poses = target_bboxes_poses
-        else:
-            target_bboxes = target_bboxes_poses
-            target_poses = torch.zeros_like(pred_poses).to(self.device)
         # Cls loss
         # loss[1] = self.varifocal_loss(pred_scores, target_scores, target_labels) / target_scores_sum  # VFL way
         loss[1] = self.bce(pred_scores, target_scores.to(dtype)).sum() / target_scores_sum  # BCE

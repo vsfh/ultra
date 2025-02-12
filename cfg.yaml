@@ -7,7 +7,7 @@ mode: train  # (str) YOLO mode, i.e. train, val, predict, export, track, benchma
 # Train settings -------------------------------------------------------------------------------------------------------
 model: yolov8n.pt # (str, optional) path to model file, i.e. yolov8n.pt, yolov8n.yaml
 data: shenfeihong # (str, optional) path to data file, i.e. coco128.yaml
-epochs: 100  # (int) number of epochs to train for
+epochs: 20  # (int) number of epochs to train for
 time:  # (float, optional) number of hours to train for, overrides epochs if supplied
 patience: 50  # (int) epochs to wait for no observable improvement for early stopping of training
 batch: 24  # (int) number of images per batch (-1 for AutoBatch)
@@ -27,7 +27,7 @@ seed: 0  # (int) random seed for reproducibility
 deterministic: True  # (bool) whether to enable deterministic mode
 single_cls: False  # (bool) train multi-class data as single-class
 rect: False  # (bool) rectangular training if mode='train' or rectangular validation if mode='val'
-cos_lr: False  # (bool) use cosine learning rate scheduler
+cos_lr: True  # (bool) use cosine learning rate scheduler
 close_mosaic: 10  # (int) disable mosaic augmentation for final epochs (0 to disable)
 resume: False  # (bool) resume training from last checkpoint
 amp: False  # (bool) Automatic Mixed Precision (AMP) training, choices=[True, False], True runs AMP check
@@ -87,8 +87,8 @@ workspace: 4  # (int) TensorRT: workspace size (GB)
 nms: False  # (bool) CoreML: add NMS
 
 # Hyperparameters ------------------------------------------------------------------------------------------------------
-lr0: 0.001  # (float) initial learning rate (i.e. SGD=1E-2, Adam=1E-3)
-lrf: 0.01  # (float) final learning rate (lr0 * lrf)
+lr0: 0.01  # (float) initial learning rate (i.e. SGD=1E-2, Adam=1E-3)
+lrf: 0.1  # (float) final learning rate (lr0 * lrf)
 momentum: 0.937  # (float) SGD momentum/Adam beta1
 weight_decay: 0.0005  # (float) optimizer weight decay 5e-4
 warmup_epochs: 3.0  # (float) warmup epochs (fractions ok)

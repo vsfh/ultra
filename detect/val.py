@@ -154,7 +154,7 @@ def plot_images(images,
                         label = f'{c}' if labels else f'{c} {conf[j]:.1f}'
                         annotator.box_label(box, label, color=color, rotated=is_obb)
                         if not poses is None:
-                            pose = poses[i].view(pose_dim)
+                            pose = poses[i][:pose_dim].view(pose_dim)
                             if isinstance(pose, torch.Tensor):
                                 pose = pose.cpu().numpy()
                             # if len(pose.shape)!=1:
@@ -276,10 +276,10 @@ class DetectionValidator(BaseValidator):
                 self.args.batch = 1  # export.py models default to batch-size 1
                 LOGGER.info(f'Forcing batch=1 square inference (1,3,{imgsz},{imgsz}) for non-PyTorch models')
             self.data = {
-                # 'train':'/data/shenfeihong/classification/image/train',
-                # 'val':'/data/shenfeihong/classification/image/val',
-                'train':'/home/vsfh/data/cls/image/train_sub',
-                'val':'/home/vsfh/data/cls/image/train_sub', 
+                'train':'/data/shenfeihong/classification/train_sub',
+                'val':'/data/shenfeihong/classification/train_sub',
+                # 'train':'/home/vsfh/data/cls/image/train_sub',
+                # 'val':'/home/vsfh/data/cls/image/train_sub', 
                 'names':{2:'ceph',
                         8:'bite',
                         1:'pano',
@@ -303,10 +303,16 @@ class DetectionValidator(BaseValidator):
             model.eval()
             model.warmup(imgsz=(1 if pt else self.args.batch, 3, imgsz, imgsz))  # warmup
 
-        self.run_callbacks('on_val_start')
-        dt = Profile(), Profile(), Profile(), Profile()
+        self.run_callbacks("on_val_start")
+        dt = (
+            Profile(device=self.device),
+            Profile(device=self.device),
+            Profile(device=self.device),
+            Profile(device=self.device),
+        )
         bar = TQDM(self.dataloader, desc=self.get_desc(), total=len(self.dataloader))
         self.init_metrics(de_parallel(model))
+        model = de_parallel(model)
         self.jdict = []  # empty before each val
         for batch_i, batch in enumerate(bar):
             self.run_callbacks('on_val_batch_start')
@@ -413,7 +419,7 @@ class DetectionValidator(BaseValidator):
                                 labels=self.lb,
                                 multi_label=False,
                                 agnostic=self.args.single_cls,
-                                max_det=self.args.max_det,
+                                max_det=10,
                                 ), pred_poses
 
 

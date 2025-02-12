@@ -12,7 +12,6 @@ from ultralytics.utils import LOCAL_RANK, NUM_THREADS, TQDM, colorstr, is_dir_wr
 from ultralytics.utils.ops import resample_segments
 
 from ultralytics.data.augment import Compose, Format, Instances, LetterBox, v8_transforms
-from ultralytics.data.base import BaseDataset
 from ultralytics.data.utils import HELP_URL, LOGGER, get_hash
 
 DATASET_CACHE_VERSION = '1.0.3'
@@ -24,20 +23,16 @@ import random
 from copy import deepcopy
 from multiprocessing.pool import ThreadPool
 from pathlib import Path
-from typing import Any, Optional
 import json
 from scipy.spatial.transform import Rotation as R
 
 import cv2
 import numpy as np
-import psutil
-from torch.utils.data import Dataset
 
 from ultralytics.utils import LOCAL_RANK, LOGGER, NUM_THREADS, TQDM
 
 from ultralytics.data.utils import HELP_URL, IMG_FORMATS
 
-from ultralytics.utils import yaml_load, IterableSimpleNamespace
 from ultralytics.utils.ops import xyxy2xywh
 from PIL import Image
 from ultralytics.data.dataset import BaseDataset
@@ -86,6 +81,7 @@ class BboxesPose(Bboxes):
         new_bbox[:,-2:] = (x2y2 @ M.T)[:,:2]
         
         self.bboxes = new_bbox
+
 class InstancesPose(Instances):
     def __init__(self, bboxes, poses, segments=None, keypoints=None, bbox_format='xywh', normalized=True) -> None:
         """
@@ -173,6 +169,58 @@ class RandomRot:
         labels['img'] = img
         return labels
 
+class CutFace:
+    """Resize image and padding for detection, instance segmentation, pose."""
+
+    def __init__(self, new_shape=(640, 640), auto=False, scaleFill=False, scaleup=True, center=True, stride=32):
+        """Initialize LetterBox object with specific parameters."""
+        self.new_shape = new_shape
+        self.auto = auto
+        self.scaleFill = scaleFill
+        self.scaleup = scaleup
+        self.stride = stride
+        self.center = center  # Put the image in the middle or top-left
+
+    def __call__(self, labels, image=None):
+        """Return updated labels and image with added border."""
+        assert labels is not None, 'label is None'
+        img = labels.get("img") if image is None else image
+        shape = img.shape[:2]  # current shape [height, width]
+        if not 10 in labels.get('cls'):
+            return labels
+        labels["instances"].convert_bbox(format="xyxy")
+        labels["instances"].denormalize(*labels["img"].shape[:2][::-1])
+        bbox = labels.get('instances').bboxes[0]
+        if np.random.randint(1,10)>5:
+            x1 = int(bbox[0]*np.random.randint(1,10)/10)
+            x2 = int(bbox[2]+(shape[1]-bbox[2])*np.random.randint(1,10)/10)
+            y1 = int(bbox[1]*np.random.randint(1,10)/100)
+            y2 = int(bbox[3]+(shape[0]-bbox[3])*np.random.randint(1,10)/10)
+            img = img[y1:y2, x1:x2,]
+        else:
+            x1 = -int(bbox[0]*np.random.randint(1,10)/10)
+            y1 = -int(bbox[1]*np.random.randint(1,10)/10)
+            img = cv2.copyMakeBorder(
+            img, -y1, -y1, -x1, -x1, cv2.BORDER_CONSTANT, value=(0, 0, 0)
+            )
+        if np.random.randint(1,10)>5:
+            noise = np.random.normal(0, 1, img.shape)
+            img = cv2.add(img, noise.astype(np.uint8))
+            
+        if len(labels):
+            labels["instances"].add_padding(-x1, -y1)
+            labels["img"] = img
+            return labels
+        else:
+            return img
+
+    def _update_labels(self, labels, padw, padh):
+        """Update labels."""
+
+        
+        return labels
+
+
 class FormatPose:
     def __init__(self, **kwargs):
         self.format = Format(**kwargs)
@@ -215,10 +263,10 @@ class YOLODataset(BaseDataset):
         self.use_keypoints = task == 'pose'
         self.use_obb = task == 'obb'
         self.data = {
-            # 'train':'/data/shenfeihong/classification/image/train',
-            # 'val':'/data/shenfeihong/classification/image/val',
-            'train':'/home/vsfh/data/cls/image/train_sub',
-            'val':'/home/vsfh/data/cls/image/train_sub', 
+            'train':'/data/shenfeihong/classification/train_sub',
+            'val':'/data/shenfeihong/classification/train_sub',
+            # 'train':'/home/vsfh/data/cls/image/train_sub',
+            # 'val':'/home/vsfh/data/cls/image/train_sub', 
             'names':{2:'ceph',
                     8:'bite',
                     1:'pano',
@@ -268,20 +316,20 @@ class YOLODataset(BaseDataset):
                     bbox = context['xyxy']
                     euler = [0,0,0]
                     if folder_name in smile_cls:
-                        cls = 9
-                        a = bbox[0]-0.1*abs(bbox[2]-bbox[0])
-                        c = bbox[2]+0.1*abs(bbox[2]-bbox[0])
-                        b = bbox[1]-0.1*abs(bbox[3]-bbox[1])
-                        d = bbox[3]+0.1*abs(bbox[3]-bbox[1])
+                        cls = 10
+                        a = bbox[0]-0.0*abs(bbox[2]-bbox[0])
+                        c = bbox[2]+0.0*abs(bbox[2]-bbox[0])
+                        b = bbox[1]-0.0*abs(bbox[3]-bbox[1])
+                        d = bbox[3]+0.0*abs(bbox[3]-bbox[1])
                         euler = context['euler']
                         if len(euler) != 3:
                             euler = euler[0]
                     elif folder_name in face_cls:
                         cls = 10
-                        a = bbox[0]-0.1*abs(bbox[2]-bbox[0])
-                        c = bbox[2]+0.1*abs(bbox[2]-bbox[0])
-                        b = bbox[1]-0.1*abs(bbox[3]-bbox[1])
-                        d = bbox[3]+0.1*abs(bbox[3]-bbox[1])
+                        a = bbox[0]-0.0*abs(bbox[2]-bbox[0])
+                        c = bbox[2]+0.0*abs(bbox[2]-bbox[0])
+                        b = bbox[1]-0.0*abs(bbox[3]-bbox[1])
+                        d = bbox[3]+0.0*abs(bbox[3]-bbox[1])
                         euler = context['euler']
                         if len(euler) != 3:
                             euler = euler[0]
@@ -299,6 +347,18 @@ class YOLODataset(BaseDataset):
                         classes = np.array([x[0] for x in lb], dtype=np.float32)
                         segments = [np.array(x[1:], dtype=np.float32).reshape(-1, 2) for x in lb]  # (cls, xy1...)
                         lb = np.concatenate((classes.reshape(-1, 1), segments2boxes(segments)), 1)  # (cls, xywh)
+                    if folder_name in smile_cls and os.path.isfile(lb_file.replace('network_res','face_res')):
+                        m_bbox = json.load(open(lb_file.replace('network_res','face_res')))['mouth']
+                        a = m_bbox[0]-0.01*abs(m_bbox[2]-m_bbox[0])
+                        c = m_bbox[2]+0.01*abs(m_bbox[2]-m_bbox[0])
+                        b = m_bbox[1]-0.01*abs(m_bbox[3]-m_bbox[1])
+                        d = m_bbox[3]+0.01*abs(m_bbox[3]-m_bbox[1])
+                        a = min(max(0.001,a/shape[1]),0.999)
+                        b = min(max(0.001,b/shape[0]),0.999)
+                        c = min(max(a,min(c/shape[1],0.999)),0.999)
+                        d = min(max(b,min(d/shape[0],0.999)),0.999)
+                        a,b,c,d = xyxy2xywh(np.array([a,b,c,d])).tolist()
+                        lb.append([9, a,b,c,d, euler[1]/90, 0])
                     lb = np.array(lb, dtype=np.float32)
             nl = len(lb)
             if nl:
@@ -426,7 +486,7 @@ class YOLODataset(BaseDataset):
         # for path in im_files:
         #     label_files.append(path.replace('.jpg','.json').replace('img','label'))
         json_dir = '/data/shenfeihong/classification/network_res/'
-        json_dir = '/mnt/hdd/data/cls/network_res/'
+        # json_dir = '/mnt/hdd/data/cls/network_res/'
         for x in im_files:
             label_files.append(os.path.join(json_dir, x.split('/')[-2], os.path.basename(x).replace('jpg', 'json')))
         return label_files
@@ -472,7 +532,7 @@ class YOLODataset(BaseDataset):
 
     def build_transforms(self, hyp=None):
         """Builds and appends transforms to the list."""
-        transforms = Compose([LetterBox(new_shape=(self.imgsz, self.imgsz), scaleup=False), RandomRot(),])
+        transforms = Compose([CutFace(),LetterBox(new_shape=(self.imgsz, self.imgsz), scaleup=False), RandomRot()])
 
         transforms.append(
             FormatPose(bbox_format='xywh',
@@ -492,6 +552,43 @@ class YOLODataset(BaseDataset):
         hyp.mixup = 0.0  # keep the same behavior as previous v8 close-mosaic
         self.transforms = self.build_transforms(hyp)
 
+    def load_image(self, i, rect_mode=True):
+        """Loads 1 image from dataset index 'i', returns (im, resized hw)."""
+        im, f, fn = self.ims[i], self.im_files[i], self.npy_files[i]
+        if im is None:  # not cached in RAM
+            if fn.exists():  # load npy
+                try:
+                    im = np.load(fn)
+                except Exception as e:
+                    LOGGER.warning(f"{self.prefix}WARNING ⚠️ Removing corrupt *.npy image file {fn} due to: {e}")
+                    Path(fn).unlink(missing_ok=True)
+                    im = cv2.imread(f)  # BGR
+            else:  # read image
+                im = cv2.imread(f)  # BGR
+            if im is None:
+                raise FileNotFoundError(f"Image Not Found {f}")
+
+            h0, w0 = im.shape[:2]  # orig hw
+            if rect_mode:  # resize long side to imgsz while maintaining aspect ratio
+                r = 1000 / max(h0, w0)  # ratio
+                if r != 1:  # if sizes are not equal
+                    w, h = (min(math.ceil(w0 * r), 1000), min(math.ceil(h0 * r), 1000))
+                    im = cv2.resize(im, (w, h), interpolation=cv2.INTER_LINEAR)
+            if not rect_mode and not (h0 == w0 == self.imgsz):  # resize by stretching image to square imgsz
+                im = cv2.resize(im, (self.imgsz, self.imgsz), interpolation=cv2.INTER_LINEAR)
+
+            # Add to buffer if training with augmentations
+            if self.augment:
+                self.ims[i], self.im_hw0[i], self.im_hw[i] = im, (h0, w0), im.shape[:2]  # im, hw_original, hw_resized
+                self.buffer.append(i)
+                if len(self.buffer) >= self.max_buffer_length:
+                    j = self.buffer.pop(0)
+                    self.ims[j], self.im_hw0[j], self.im_hw[j] = None, None, None
+
+            return im, (h0, w0), im.shape[:2]
+
+        return self.ims[i], self.im_hw0[i], self.im_hw[i]
+    
     def update_labels_info(self, label):
         """Custom your label format here."""
         # NOTE: cls is not with bboxes now, classification and semantic segmentation need an independent cls label
